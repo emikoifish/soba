@@ -1,4 +1,4 @@
-# python3 parser.py -i HG002_PacBio_GRCh38.bam -o test.txt
+# python3 parser.py -i ../HG002_PacBio_GRCh38.bam -r ../GCA_000001405.15_GRCh38_no_alt_analysis_set.fna  -o test.txt
 
 import pysam
 import argparse
@@ -7,15 +7,82 @@ from graphviz import Digraph
 from pyfasta import Fasta
 import math
 
-def parseBam(inputFile, outputFile):
-    samfile = pysam.AlignmentFile(inputFile, "rb")
+def findStartFromCigar(read, start, ref=None, seq=None, tIndex=None):
+    if ref:
+        refPos = ref
+    else:
+        refPos = read.reference_start
 
+    if seq:
+        seqPos = seq
+    else:
+        seqPos = 0
+
+    if tIndex == None:
+        tIndex = 0
+
+    for t in range(tIndex, len(read.cigartuples)):
+        # Move reference genome position based on cigar tuple
+        if read.cigartuples[t][0] in [0, 2, 3, 7, 8]:  # Only advance if match, deletion, skip, equal, or mismatch
+            if (refPos + read.cigartuples[t][1]) > start:
+                savedRef = refPos
+                savedSeq = seqPos
+                if read.cigartuples[t][0] in [0, 7, 8]:
+                    # save the ref and seq here so when finding the end can start from there
+                    while refPos < start:
+                        refPos += 1
+                        seqPos += 1
+                return [read, refPos, t, seqPos-1, savedRef, savedSeq]
+            refPos += read.cigartuples[t][1]
+        if read.cigartuples[t][0] in [0, 1, 4, 7, 8]:  # Only advance if match, softclip, insertion, equal, or mismatch
+            seqPos += read.cigartuples[t][1]
+        if read.cigartuples[t][0] in [5,6]:
+            print(read.cigartuples[t][1], read.cigartuples[t][0])
+    return [read, refPos, t, seqPos - 1, refPos, seqPos]
+
+def findEndFromCigar(read, refPos, tIndex, seqPos, end):
+    for t in range(tIndex, len(read.cigartuples)):
+        # Move reference genome position based on cigar tuple
+        if read.cigartuples[t][0] in [0, 2, 3, 7, 8]:  # Only advance if match, deletion, skip, equal, or mismatch
+            if (refPos + read.cigartuples[t][1]) > end:
+                if read.cigartuples[t][0] in [0, 7, 8]:
+                    while refPos < end:
+                        refPos += 1
+                        seqPos += 1
+                return [read, refPos, t, seqPos]
+            refPos += read.cigartuples[t][1]
+        if read.cigartuples[t][0] in [0, 1, 4, 7, 8]:  # Only advance if match, insertion, equal, or mismatch
+            seqPos += read.cigartuples[t][1]
+        if read.cigartuples[t][0] in [5,6]:
+            print(read.cigartuples[t][1], read.cigartuples[t][0])
+    # if end past end of sequence
+    return [read, refPos, t, seqPos]
+
+
+
+def parseBam(inputBam, inputRef, outputFile):
+    samfile = pysam.AlignmentFile(inputBam, "rb")
+
+    # check how many reads should actually be found
+    # i = 0
+    # for read in samfile.fetch('chr20', 1120000, 1120030):
+    #     r, refPos, t, seqPos, savedRef, savedSeq = findStartFromCigar(read, 1120000)
+    #     print("start", refPos, t, seqPos)
+    #     er, erefPos, et, eseqPos = findEndFromCigar(read, savedRef, t, savedSeq, 1120030)
+    #     print("end", erefPos, et, eseqPos)
+    #     windowedRead = read.query_alignment_sequence[seqPos:eseqPos]
+    #     print("test windowed read", seqPos, eseqPos, windowedRead,
+    #           refPos, erefPos)
+    #     print(read.reference_start)
+    #     print(read.cigartuples[t:et])
+    #     i+=1
+    # print(i)
 
     chr = "chr20"
-    startIndex = 1120000
-    endIndex = 1130000
-    # startIndex = 1000000
-    # endIndex = 2000000
+    # startIndex = 1120000
+    # endIndex = 1120030
+    startIndex = 1000000
+    endIndex = 1050000
     k = 8
     windowSize = 30
     windowOverlap = 5
@@ -27,76 +94,179 @@ def parseBam(inputFile, outputFile):
         print("endIndex needs to be larger than or equal to startIndex + windowSize. Setting endIndex to: ", endIndex)
 
     print("CHROM\tPOS\tID\tREF\tALT\tMINCOUNT")
-    for interval in range(startIndex, endIndex - windowSize+1, windowOverlap):
-        index1 = interval
-        index2 = interval + windowSize
 
-        myGraph = Graph(chr+"_"+str(index1)+"_"+str(index2), chr, index1, index2, k)
-        index1 -= 1
+    if endIndex- startIndex  < 10000:
+        fetchSize = endIndex - startIndex
+    else:
+        fetchSize = 10000
+    for largeSeg in range(startIndex, endIndex - windowSize+1, fetchSize):
+        largeSegStart = largeSeg
+        largeSegEnd = largeSeg + fetchSize
+        cursors = []
+        reads = samfile.fetch('chr20', largeSegStart, largeSegEnd)
+        savedRead = next(reads)
 
-        # get the ref sequence
-        f = Fasta('GCA_000001405.15_GRCh38_no_alt_analysis_set.fna')
-        ref = f["chr20  AC:CM000682.2  gi:568336004  LN:64444167  rl:Chromosome  M5:b18e6c531b0bd70e949a7fc20859cb01  AS:GRCh38"][index1:index2]
+        for interval in range(largeSegStart, largeSegEnd, windowOverlap):
+            index1 = interval
+            index2 = interval + windowSize
+            myGraph = Graph(chr + "_" + str(index1) + "_" + str(index2), chr, index1, index2, k)
 
-        refNodes = deBruijn(myGraph, k, ref, ref=True)
-        i = index1 + 1
-        for node in refNodes:
-            myGraph.nodes[node].ref = True
-            myGraph.nodes[node].addRefPos(i)
-            i += 1
-        myGraph.ref = ref
+            # get the ref sequence
+            f = Fasta(inputRef)
+            ref = f["chr20  AC:CM000682.2  gi:568336004  LN:64444167  rl:Chromosome  M5:b18e6c531b0bd70e949a7fc20859cb01  AS:GRCh38"][index1-1:index2]
 
-        for read in samfile.fetch('chr20', index1, index2):
-            refPos = read.get_reference_positions(full_length=True)
-            # cigar = read.cigartuples
-            # print(cigar)
+            i = index1 + 1
+            refNodes = deBruijn(myGraph, k, ref, ref=True)
+            for node in refNodes:
+                myGraph.nodes[node].ref = True
+                myGraph.nodes[node].addRefPos(i)
+                i += 1
+            myGraph.ref = ref
 
-            if index1 in refPos:
-                seqFirstIndex = refPos.index(index1)
-            else:
-                seqFirstIndex = findClosestIndex(refPos, index1, True)
 
-            if index2 in refPos:
-                seqLastIndex = refPos.index(index2)
-            else:
-                seqLastIndex = findClosestIndex(refPos, index2, False)
+            # check if need to add any new cursors
 
-            windowedRead = read.query_alignment_sequence[seqFirstIndex:seqLastIndex]
+            while savedRead:
+                read = savedRead
+                refPos = read.reference_start
+                if refPos > index1:
+                    break
+                cursors.append(findStartFromCigar(read, index1))
+                savedRead = next(reads, None)
 
-            deBruijn(myGraph, k, windowedRead, read.is_reverse)
+            removeUpToHere = 0
+            # update cursors and add seq to graph
+            # print(index1, index2)
+            for i in range(0, len(cursors)):
+                read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
+                cursors[i] = findStartFromCigar(read, index1, ref=savedRef, seq=savedSeq, tIndex=cigarIndex)
+                read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
 
-        myGraph.pruneGraph(5)
-        # myGraph.collapsedGraph()
-        
-        # find the variants and add to currentPositionVariants
-        for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findVariants(refNodes):
-            if POS in currentPositionVariants:
-                sameVariant = False
-                for variant in currentPositionVariants[POS]:
-                    if variant[2] == REF and variant[3] == ALT:
-                        variant[4] = max(MINCOUNT, variant[4])
-                        sameVariant = True
-                if sameVariant == False:
-                    currentPositionVariants[POS].append([CHROM, ID, REF, ALT, MINCOUNT])
-            else:
-                currentPositionVariants[POS] = [[CHROM, ID, REF, ALT, MINCOUNT]]
+                if refPosStart >= index1 and refPosStart <= index2:
+                    # get the appropiate sequence
+                    r, refPosEnd, t, seqPosEnd = findEndFromCigar(read, savedRef, cigarIndex, savedSeq, index2)
 
-        # print variants with pos smaller than start index
+                    windowedRead = read.query_alignment_sequence[seqPosStart:seqPosEnd]
+                    # print(refPosStart, refPosEnd, windowedRead)
+                    deBruijn(myGraph, k, windowedRead, read.is_reverse)
+                else:
+                    # remove from memory
+                    removeUpToHere = i
+            cursors = cursors[removeUpToHere:]
+            myGraph.pruneGraph(5)
+            # myGraph.collapsedGraph()
+
+            # find the variants and add to currentPositionVariants
+            for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findVariants(refNodes):
+                if POS in currentPositionVariants:
+                    sameVariant = False
+                    for variant in currentPositionVariants[POS]:
+                        if variant[2] == REF and variant[3] == ALT:
+                            variant[4] = max(MINCOUNT, variant[4])
+                            sameVariant = True
+                    if sameVariant == False:
+                        currentPositionVariants[POS].append(
+                            [CHROM, ID, REF, ALT, MINCOUNT])
+                else:
+                    currentPositionVariants[POS] = [
+                        [CHROM, ID, REF, ALT, MINCOUNT]]
+
+            # print variants with pos smaller than start index
+            for i in sorted(currentPositionVariants):
+                if i < index1:
+                    for variant in currentPositionVariants[i]:
+                        print(variant[0], i, variant[1], variant[2],
+                              variant[3], variant[4], sep="\t")
+                    del currentPositionVariants[i]
+                else:
+                    break
+
+            # myGraph.printGraph()
+            # break
+
+                    # print the rest of the variants that haven't been removed from the list
         for i in sorted(currentPositionVariants):
-            if i < index1:
-                for variant in currentPositionVariants[i]:
-                    print(variant[0], i, variant[1],variant[2],variant[3],variant[4], sep="\t")
-                del currentPositionVariants[i]
-            else:
-                break
-
-        # myGraph.printGraph()
-
-    # print the rest of the variants that haven't been removed from the list
-    for i in sorted(currentPositionVariants):
-        for variant in currentPositionVariants[i]:
-            print(variant[0], i, variant[1], variant[2], variant[3], variant[4], sep="\t")
+            for variant in currentPositionVariants[i]:
+                print(variant[0], i, variant[1], variant[2], variant[3],
+                      variant[4], sep="\t")
     samfile.close()
+
+
+
+
+    #
+    # for interval in range(startIndex, endIndex - windowSize+1, windowOverlap):
+    #     index1 = interval
+    #     index2 = interval + windowSize
+    #
+    #     myGraph = Graph(chr+"_"+str(index1)+"_"+str(index2), chr, index1, index2, k)
+    #     index1 -= 1
+    #
+    #     # get the ref sequence
+    #     f = Fasta(inputRef)
+    #     ref = f["chr20  AC:CM000682.2  gi:568336004  LN:64444167  rl:Chromosome  M5:b18e6c531b0bd70e949a7fc20859cb01  AS:GRCh38"][index1:index2]
+    #
+    #     refNodes = deBruijn(myGraph, k, ref, ref=True)
+    #     i = index1 + 1
+    #     for node in refNodes:
+    #         myGraph.nodes[node].ref = True
+    #         myGraph.nodes[node].addRefPos(i)
+    #         i += 1
+    #     myGraph.ref = ref
+    #
+    #     for read in samfile.fetch('chr20', index1, index2):
+    #         refPos = read.get_reference_positions(full_length=True)
+    #         # cigar = read.cigartuples
+    #         # print(cigar)
+    #
+    #         if index1 in refPos:
+    #             seqFirstIndex = refPos.index(index1)
+    #         else:
+    #             print("maybe1")
+    #             seqFirstIndex = findClosestIndex(refPos, index1, True)
+    #
+    #         if index2 in refPos:
+    #             seqLastIndex = refPos.index(index2)
+    #         else:
+    #             print("maybe2")
+    #             seqLastIndex = findClosestIndex(refPos, index2, False)
+    #
+    #         windowedRead = read.query_alignment_sequence[seqFirstIndex:seqLastIndex]
+    #         print("true windowed read", seqFirstIndex, seqLastIndex, windowedRead, index1, index2)
+    #         deBruijn(myGraph, k, windowedRead, read.is_reverse)
+    #
+    #     myGraph.pruneGraph(5)
+    #     # myGraph.collapsedGraph()
+    #
+    #     # find the variants and add to currentPositionVariants
+    #     for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findVariants(refNodes):
+    #         if POS in currentPositionVariants:
+    #             sameVariant = False
+    #             for variant in currentPositionVariants[POS]:
+    #                 if variant[2] == REF and variant[3] == ALT:
+    #                     variant[4] = max(MINCOUNT, variant[4])
+    #                     sameVariant = True
+    #             if sameVariant == False:
+    #                 currentPositionVariants[POS].append([CHROM, ID, REF, ALT, MINCOUNT])
+    #         else:
+    #             currentPositionVariants[POS] = [[CHROM, ID, REF, ALT, MINCOUNT]]
+    #
+    #     # print variants with pos smaller than start index
+    #     for i in sorted(currentPositionVariants):
+    #         if i < index1:
+    #             for variant in currentPositionVariants[i]:
+    #                 print(variant[0], i, variant[1],variant[2],variant[3],variant[4], sep="\t")
+    #             del currentPositionVariants[i]
+    #         else:
+    #             break
+    #
+    #     # myGraph.printGraph()
+    #
+    # # print the rest of the variants that haven't been removed from the list
+    # for i in sorted(currentPositionVariants):
+    #     for variant in currentPositionVariants[i]:
+    #         print(variant[0], i, variant[1], variant[2], variant[3], variant[4], sep="\t")
+    # samfile.close()
 
 
 
@@ -275,7 +445,7 @@ class Graph:
 
                         minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos[0],ref2Pos[0])
 
-                        yield (self.chr, minPos, "ID",minRef, minSeq, self.nodeStats(path)[0])
+                        yield (self.chr, minPos-1, "ID",minRef, minSeq, self.nodeStats(path)[0])
                         # print(ref1Pos, ref2Pos, ref, seq)
                     else:
                         # cycle in graph, do not print
@@ -464,14 +634,18 @@ def argParser():
     parser.add_argument("--outputFile","-o",
                         type=str,
                         help="specify the file name of the output file")
-    parser.add_argument("--inputFile","-i",
+    parser.add_argument("--inputBam","-i",
                         type=str,
-                        help="specify the file name of the input file")
+                        help="specify the file name of the input BAM file")
+    parser.add_argument("--inputRef", "-r",
+                        type=str,
+                        help="specify the file name of the input reference file")
+
     return vars(parser.parse_args())
 
 def main():
     args = argParser()
-    parseBam(args["inputFile"],args["outputFile"])
+    parseBam(args["inputBam"], args["inputRef"],args["outputFile"])
 
 
 
