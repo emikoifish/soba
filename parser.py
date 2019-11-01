@@ -63,26 +63,11 @@ def findEndFromCigar(read, refPos, tIndex, seqPos, end):
 def parseBam(inputBam, inputRef, outputFile):
     samfile = pysam.AlignmentFile(inputBam, "rb")
 
-    # check how many reads should actually be found
-    # i = 0
-    # for read in samfile.fetch('chr20', 1120000, 1120030):
-    #     r, refPos, t, seqPos, savedRef, savedSeq = findStartFromCigar(read, 1120000)
-    #     print("start", refPos, t, seqPos)
-    #     er, erefPos, et, eseqPos = findEndFromCigar(read, savedRef, t, savedSeq, 1120030)
-    #     print("end", erefPos, et, eseqPos)
-    #     windowedRead = read.query_alignment_sequence[seqPos:eseqPos]
-    #     print("test windowed read", seqPos, eseqPos, windowedRead,
-    #           refPos, erefPos)
-    #     print(read.reference_start)
-    #     print(read.cigartuples[t:et])
-    #     i+=1
-    # print(i)
-
     chr = "chr20"
-    # startIndex = 1120000
-    # endIndex = 1120030
-    startIndex = 1000000
-    endIndex = 1050000
+    startIndex = 1015640
+    endIndex = 1015670
+    # startIndex = 1000000
+    # endIndex = 1050000
     k = 8
     windowSize = 30
     windowOverlap = 5
@@ -93,7 +78,12 @@ def parseBam(inputBam, inputRef, outputFile):
         endIndex = startIndex + windowSize
         print("endIndex needs to be larger than or equal to startIndex + windowSize. Setting endIndex to: ", endIndex)
 
-    print("CHROM\tPOS\tID\tREF\tALT\tMINCOUNT")
+    print("##fileformat=VCFv4.3")
+    print("##reference=GCA_000001405.15")
+    print('##INFO=<ID=NS,Number=1,Type=Integer,Description="Number of Samples With Data">')
+    print('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">')
+    print('##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">')
+    print("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")
 
     if endIndex- startIndex  < 10000:
         fetchSize = endIndex - startIndex
@@ -106,7 +96,7 @@ def parseBam(inputBam, inputRef, outputFile):
         reads = samfile.fetch('chr20', largeSegStart, largeSegEnd)
         savedRead = next(reads)
 
-        for interval in range(largeSegStart, largeSegEnd, windowOverlap):
+        for interval in range(largeSegStart, largeSegEnd - windowSize + 1, windowOverlap):
             index1 = interval
             index2 = interval + windowSize
             myGraph = Graph(chr + "_" + str(index1) + "_" + str(index2), chr, index1, index2, k)
@@ -115,7 +105,7 @@ def parseBam(inputBam, inputRef, outputFile):
             f = Fasta(inputRef)
             ref = f["chr20  AC:CM000682.2  gi:568336004  LN:64444167  rl:Chromosome  M5:b18e6c531b0bd70e949a7fc20859cb01  AS:GRCh38"][index1-1:index2]
 
-            i = index1 + 1
+            i = index1
             refNodes = deBruijn(myGraph, k, ref, ref=True)
             for node in refNodes:
                 myGraph.nodes[node].ref = True
@@ -153,7 +143,7 @@ def parseBam(inputBam, inputRef, outputFile):
                     # remove from memory
                     removeUpToHere = i
             cursors = cursors[removeUpToHere:]
-            myGraph.pruneGraph(5)
+            myGraph.pruneGraph(2)
             # myGraph.collapsedGraph()
 
             # find the variants and add to currentPositionVariants
@@ -176,25 +166,23 @@ def parseBam(inputBam, inputRef, outputFile):
                 if i < index1:
                     for variant in currentPositionVariants[i]:
                         print(variant[0], i, variant[1], variant[2],
-                              variant[3], variant[4], sep="\t")
+                              variant[3], "50", "PASS","NS="+str(variant[4]), sep="\t")
                     del currentPositionVariants[i]
                 else:
                     break
 
-            # myGraph.printGraph()
+            myGraph.printGraph()
             # break
 
-                    # print the rest of the variants that haven't been removed from the list
+        # print the rest of the variants that haven't been removed from the list
         for i in sorted(currentPositionVariants):
             for variant in currentPositionVariants[i]:
                 print(variant[0], i, variant[1], variant[2], variant[3],
-                      variant[4], sep="\t")
+                      "50","PASS","NS="+str(variant[4]), sep="\t")
     samfile.close()
 
 
 
-
-    #
     # for interval in range(startIndex, endIndex - windowSize+1, windowOverlap):
     #     index1 = interval
     #     index2 = interval + windowSize
@@ -222,17 +210,14 @@ def parseBam(inputBam, inputRef, outputFile):
     #         if index1 in refPos:
     #             seqFirstIndex = refPos.index(index1)
     #         else:
-    #             print("maybe1")
     #             seqFirstIndex = findClosestIndex(refPos, index1, True)
     #
     #         if index2 in refPos:
     #             seqLastIndex = refPos.index(index2)
     #         else:
-    #             print("maybe2")
     #             seqLastIndex = findClosestIndex(refPos, index2, False)
     #
     #         windowedRead = read.query_alignment_sequence[seqFirstIndex:seqLastIndex]
-    #         print("true windowed read", seqFirstIndex, seqLastIndex, windowedRead, index1, index2)
     #         deBruijn(myGraph, k, windowedRead, read.is_reverse)
     #
     #     myGraph.pruneGraph(5)
@@ -255,7 +240,7 @@ def parseBam(inputBam, inputRef, outputFile):
     #     for i in sorted(currentPositionVariants):
     #         if i < index1:
     #             for variant in currentPositionVariants[i]:
-    #                 print(variant[0], i, variant[1],variant[2],variant[3],variant[4], sep="\t")
+    #                 print(variant[0], i, variant[1], variant[2], variant[3], "50","PASS","NS="+str(variant[4]), sep="\t")
     #             del currentPositionVariants[i]
     #         else:
     #             break
@@ -265,7 +250,7 @@ def parseBam(inputBam, inputRef, outputFile):
     # # print the rest of the variants that haven't been removed from the list
     # for i in sorted(currentPositionVariants):
     #     for variant in currentPositionVariants[i]:
-    #         print(variant[0], i, variant[1], variant[2], variant[3], variant[4], sep="\t")
+    #         print(variant[0], i, variant[1], variant[2], variant[3], "50","PASS","NS="+str(variant[4]), sep="\t")
     # samfile.close()
 
 
@@ -445,7 +430,7 @@ class Graph:
 
                         minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos[0],ref2Pos[0])
 
-                        yield (self.chr, minPos-1, "ID",minRef, minSeq, self.nodeStats(path)[0])
+                        yield (self.chr, minPos, ".",minRef, minSeq, self.nodeStats(path)[0])
                         # print(ref1Pos, ref2Pos, ref, seq)
                     else:
                         # cycle in graph, do not print
@@ -601,7 +586,7 @@ class Graph:
         dot = Digraph(comment=self.name, engine="dot")
         for key, value in self.nodes.items():
             if value.ref:
-                dot.node(key, key, style='filled', fillcolor="#E1ECF4")
+                dot.node(key, key +"\n"+str(value.refPos), style='filled', fillcolor="#E1ECF4")
             else:
                 for node, count in value.out.items():
                     if sum(count) > cutoff:
