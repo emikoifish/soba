@@ -64,8 +64,10 @@ def parseBam(inputBam, inputRef, outputFile):
     samfile = pysam.AlignmentFile(inputBam, "rb")
 
     chr = "chr20"
-    startIndex = 1015640
-    endIndex = 1015670
+    startIndex = 0
+    endIndex = 64444167
+    # startIndex = 1040000
+    # endIndex = 1050000
     # startIndex = 1000000
     # endIndex = 1050000
     k = 8
@@ -94,91 +96,102 @@ def parseBam(inputBam, inputRef, outputFile):
         largeSegEnd = largeSeg + fetchSize
         cursors = []
         reads = samfile.fetch('chr20', largeSegStart, largeSegEnd)
-        savedRead = next(reads)
+        savedRead = next(reads, None)
 
-        for interval in range(largeSegStart, largeSegEnd - windowSize + 1, windowOverlap):
-            index1 = interval
-            index2 = interval + windowSize
-            myGraph = Graph(chr + "_" + str(index1) + "_" + str(index2), chr, index1, index2, k)
+        if savedRead != None:
 
-            # get the ref sequence
-            f = Fasta(inputRef)
-            ref = f["chr20  AC:CM000682.2  gi:568336004  LN:64444167  rl:Chromosome  M5:b18e6c531b0bd70e949a7fc20859cb01  AS:GRCh38"][index1-1:index2]
+            for interval in range(largeSegStart, largeSegEnd - windowSize + 1, windowOverlap):
+                index1 = interval
+                index2 = interval + windowSize
+                myGraph = Graph(chr + "_" + str(index1) + "_" + str(index2), chr, index1, index2, k)
 
-            i = index1
-            refNodes = deBruijn(myGraph, k, ref, ref=True)
-            for node in refNodes:
-                myGraph.nodes[node].ref = True
-                myGraph.nodes[node].addRefPos(i)
-                i += 1
-            myGraph.ref = ref
+                # get the ref sequence
+                f = Fasta(inputRef)
+                ref = f["chr20  AC:CM000682.2  gi:568336004  LN:64444167  rl:Chromosome  M5:b18e6c531b0bd70e949a7fc20859cb01  AS:GRCh38"][index1-1:index2]
+
+                changedk = k
+                i = index1
+                refNodes = deBruijn(myGraph, changedk, ref, ref=True)
+                while refNodes == False and changedk <= 15:
+                    changedk += 1
+                    myGraph = Graph(chr + "_" + str(index1) + "_" + str(index2), chr, index1, index2, changedk)
+                    refNodes = deBruijn(myGraph, changedk, ref, ref=True)
+                if refNodes == False:
+                    refNodes = deBruijn(myGraph, changedk, ref, ref=True, final=True)
+
+                for node in refNodes:
+                    myGraph.nodes[node].ref = True
+                    myGraph.nodes[node].addRefPos(i)
+                    i += 1
+                myGraph.ref = ref
 
 
-            # check if need to add any new cursors
+                # check if need to add any new cursors
 
-            while savedRead:
-                read = savedRead
-                refPos = read.reference_start
-                if refPos > index1:
-                    break
-                cursors.append(findStartFromCigar(read, index1))
-                savedRead = next(reads, None)
+                while savedRead:
+                    read = savedRead
+                    refPos = read.reference_start
+                    if refPos > index1:
+                        break
+                    cursors.append(findStartFromCigar(read, index1))
+                    savedRead = next(reads, None)
 
-            removeUpToHere = 0
-            # update cursors and add seq to graph
-            # print(index1, index2)
-            for i in range(0, len(cursors)):
-                read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
-                cursors[i] = findStartFromCigar(read, index1, ref=savedRef, seq=savedSeq, tIndex=cigarIndex)
-                read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
+                removeUpToHere = 0
+                # update cursors and add seq to graph
+                # print(index1, index2)
+                for i in range(0, len(cursors)):
+                    read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
+                    cursors[i] = findStartFromCigar(read, index1, ref=savedRef, seq=savedSeq, tIndex=cigarIndex)
+                    read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
 
-                if refPosStart >= index1 and refPosStart <= index2:
-                    # get the appropiate sequence
-                    r, refPosEnd, t, seqPosEnd = findEndFromCigar(read, savedRef, cigarIndex, savedSeq, index2)
+                    if refPosStart >= index1 and refPosStart <= index2:
+                        # get the appropiate sequence
+                        r, refPosEnd, t, seqPosEnd = findEndFromCigar(read, savedRef, cigarIndex, savedSeq, index2)
 
-                    windowedRead = read.query_alignment_sequence[seqPosStart:seqPosEnd]
-                    # print(refPosStart, refPosEnd, windowedRead)
-                    deBruijn(myGraph, k, windowedRead, read.is_reverse)
-                else:
-                    # remove from memory
-                    removeUpToHere = i
-            cursors = cursors[removeUpToHere:]
-            myGraph.pruneGraph(2)
-            # myGraph.collapsedGraph()
+                        windowedRead = read.query_alignment_sequence[seqPosStart:seqPosEnd]
+                        # print(refPosStart, refPosEnd, windowedRead)
+                        deBruijn(myGraph, changedk, windowedRead, read.is_reverse)
+                    else:
+                        # remove from memory
+                        removeUpToHere = i
+                cursors = cursors[removeUpToHere:]
+                myGraph.pruneGraph(2)
+                # myGraph.collapsedGraph()
 
-            # find the variants and add to currentPositionVariants
-            for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findVariants(refNodes):
-                if POS in currentPositionVariants:
-                    sameVariant = False
-                    for variant in currentPositionVariants[POS]:
-                        if variant[2] == REF and variant[3] == ALT:
-                            variant[4] = max(MINCOUNT, variant[4])
-                            sameVariant = True
-                    if sameVariant == False:
-                        currentPositionVariants[POS].append(
-                            [CHROM, ID, REF, ALT, MINCOUNT])
-                else:
-                    currentPositionVariants[POS] = [
-                        [CHROM, ID, REF, ALT, MINCOUNT]]
+                # find the variants and add to currentPositionVariants
+                for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findVariants(refNodes):
+                    if POS in currentPositionVariants:
+                        sameVariant = False
+                        for variant in currentPositionVariants[POS]:
+                            if variant[2] == REF and variant[3] == ALT:
+                                variant[4] = max(MINCOUNT, variant[4])
+                                sameVariant = True
+                        if sameVariant == False:
+                            currentPositionVariants[POS].append(
+                                [CHROM, ID, REF, ALT, MINCOUNT])
+                    else:
+                        currentPositionVariants[POS] = [
+                            [CHROM, ID, REF, ALT, MINCOUNT]]
 
-            # print variants with pos smaller than start index
-            for i in sorted(currentPositionVariants):
-                if i < index1:
-                    for variant in currentPositionVariants[i]:
-                        print(variant[0], i, variant[1], variant[2],
-                              variant[3], "50", "PASS","NS="+str(variant[4]), sep="\t")
-                    del currentPositionVariants[i]
-                else:
-                    break
+                # print variants with pos smaller than start index
+                for i in sorted(currentPositionVariants):
+                    if i < index1:
+                        for variant in currentPositionVariants[i]:
+                            print(variant[0], i, variant[1], variant[2],
+                                  variant[3], "50", "PASS","NS="+str(variant[4]), sep="\t")
+                        del currentPositionVariants[i]
+                    else:
+                        break
 
-            myGraph.printGraph()
-            # break
+                # myGraph.printGraph()
+                # break
 
-        # print the rest of the variants that haven't been removed from the list
-        for i in sorted(currentPositionVariants):
-            for variant in currentPositionVariants[i]:
-                print(variant[0], i, variant[1], variant[2], variant[3],
-                      "50","PASS","NS="+str(variant[4]), sep="\t")
+    # print the rest of the variants that haven't been removed from the list
+    # do this at the end or else ordering might be off
+    for i in sorted(currentPositionVariants):
+        for variant in currentPositionVariants[i]:
+            print(variant[0], i, variant[1], variant[2], variant[3],
+                  "50","PASS","NS="+str(variant[4]), sep="\t")
     samfile.close()
 
 
@@ -392,10 +405,15 @@ class Graph:
             del self.nodes[out].ins[nodeName]
         del self.nodes[nodeName]
 
+    def cleanNodes(self):
+        for nodeName, node in self.nodes.items():
+            node.visited = False
+
     def dfs(self, start):
         """
         Do a Depth First Search based search of the graph for paths
         """
+        self.cleanNodes()
         finishedPaths = []
         stack = [(start, [])]
         while stack:
@@ -423,7 +441,8 @@ class Graph:
 
                 ref1Pos = self.nodes[ref1].refPos
                 ref2Pos = self.nodes[ref2].refPos
-                if len(path) > 2:
+
+                if len(path) > 2 or abs(ref1Pos[0]-ref2Pos[0]) != 1:
                     seq = self.mergeNodes(path)
                     if ref1Pos[0] < ref2Pos[0]:
                         ref = self.findRefFromPos(ref1Pos[0],ref2Pos[0])
@@ -436,6 +455,7 @@ class Graph:
                         # cycle in graph, do not print
                         #print("Cycle in graph")
                         continue
+
 
                 # else:
                 #     # if deletions this should be called
@@ -601,7 +621,7 @@ class Graph:
         dot.render('test-output/' + self.name, view=True)
 
 
-def deBruijn(graph, k, text, reverse=True, ref=False):
+def deBruijn(graph, k, text, reverse=True, ref=False, final=False):
     """
     Construct a deBruijn graph from a string.
     """
@@ -609,6 +629,9 @@ def deBruijn(graph, k, text, reverse=True, ref=False):
     for i in range(0, len(text) - k):
         node1 = text[i:i + k]
         node2 = text[i + 1:i + k + 1]
+        if ref and final==False:
+            if node1 in graph.nodes and node2 in graph.nodes:
+                return False
         graph.addEdge(node1, node2, reverse, ref)
         nodes.append(node2)
     return nodes
