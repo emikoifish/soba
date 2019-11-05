@@ -1,13 +1,22 @@
 # python3 parser.py -i ../HG002_PacBio_GRCh38.bam -r ../GCA_000001405.15_GRCh38_no_alt_analysis_set.fna  -o test.txt
 
-import pysam
 import argparse
 import sys
+import math
+import pysam
 from graphviz import Digraph
 from pyfasta import Fasta
-import math
+
 
 def findStartFromCigar(read, start, ref=None, seq=None, tIndex=None):
+    """
+    Find the start index of a sequence given the position in reference and cigar
+    :param read: a pysam aligned segment
+    :param start: position in reference
+    :param ref: saved ref position for skipping forward in the cigar
+    :param seq: saved sequence position for skipping forward in the cigar
+    :param tIndex: index to skip to in the cigar
+    """
     if ref:
         refPos = ref
     else:
@@ -18,7 +27,7 @@ def findStartFromCigar(read, start, ref=None, seq=None, tIndex=None):
     else:
         seqPos = 0
 
-    if tIndex == None:
+    if tIndex is None:
         tIndex = 0
 
     for t in range(tIndex, len(read.cigartuples)):
@@ -36,11 +45,19 @@ def findStartFromCigar(read, start, ref=None, seq=None, tIndex=None):
             refPos += read.cigartuples[t][1]
         if read.cigartuples[t][0] in [0, 1, 4, 7, 8]:  # Only advance if match, softclip, insertion, equal, or mismatch
             seqPos += read.cigartuples[t][1]
-        if read.cigartuples[t][0] in [5,6]:
+        if read.cigartuples[t][0] in [5, 6]:
             print(read.cigartuples[t][1], read.cigartuples[t][0])
     return [read, refPos, t, seqPos - 1, refPos, seqPos]
 
 def findEndFromCigar(read, refPos, tIndex, seqPos, end):
+    """
+    Find the ending index in the read corresponding to the end position based on the cigar
+    :param read: a pysam aligned segment
+    :param refPos: saved ref position for skipping forward in the cigar
+    :param tIndex: index to skip to in the cigar
+    :param seqPos: saved sequence position for skipping forward in the cigar
+    :param end: end reference position
+    """
     for t in range(tIndex, len(read.cigartuples)):
         # Move reference genome position based on cigar tuple
         if read.cigartuples[t][0] in [0, 2, 3, 7, 8]:  # Only advance if match, deletion, skip, equal, or mismatch
@@ -53,7 +70,7 @@ def findEndFromCigar(read, refPos, tIndex, seqPos, end):
             refPos += read.cigartuples[t][1]
         if read.cigartuples[t][0] in [0, 1, 4, 7, 8]:  # Only advance if match, insertion, equal, or mismatch
             seqPos += read.cigartuples[t][1]
-        if read.cigartuples[t][0] in [5,6]:
+        if read.cigartuples[t][0] in [5, 6]:
             print(read.cigartuples[t][1], read.cigartuples[t][0])
     # if end past end of sequence
     return [read, refPos, t, seqPos]
@@ -61,13 +78,20 @@ def findEndFromCigar(read, refPos, tIndex, seqPos, end):
 
 
 def parseBam(inputBam, inputRef, outputFile):
+    """
+    Goes through bam files and calls variants.
+    :param inputBam: the bam file to call variants on
+    :param inputRef: the fasta reference file
+    :param outputFile: currently not used
+    """
+
     samfile = pysam.AlignmentFile(inputBam, "rb")
 
     chr = "chr20"
-    startIndex = 0
-    endIndex = 64444167
-    # startIndex = 1040000
-    # endIndex = 1050000
+    # startIndex = 0
+    # endIndex = 64444167
+    startIndex = 153890
+    endIndex = startIndex+30
     # startIndex = 1000000
     # endIndex = 1050000
     k = 8
@@ -87,7 +111,7 @@ def parseBam(inputBam, inputRef, outputFile):
     print('##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">')
     print("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")
 
-    if endIndex- startIndex  < 10000:
+    if endIndex- startIndex < 10000:
         fetchSize = endIndex - startIndex
     else:
         fetchSize = 10000
@@ -98,7 +122,7 @@ def parseBam(inputBam, inputRef, outputFile):
         reads = samfile.fetch('chr20', largeSegStart, largeSegEnd)
         savedRead = next(reads, None)
 
-        if savedRead != None:
+        if savedRead is not None:
 
             for interval in range(largeSegStart, largeSegEnd - windowSize + 1, windowOverlap):
                 index1 = interval
@@ -139,10 +163,10 @@ def parseBam(inputBam, inputRef, outputFile):
                 removeUpToHere = 0
                 # update cursors and add seq to graph
                 # print(index1, index2)
-                for i in range(0, len(cursors)):
-                    read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
+                for i, cursor in enumerate(cursors):
+                    read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursor
                     cursors[i] = findStartFromCigar(read, index1, ref=savedRef, seq=savedSeq, tIndex=cigarIndex)
-                    read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
+                    read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursor
 
                     if refPosStart >= index1 and refPosStart <= index2:
                         # get the appropiate sequence
@@ -178,12 +202,12 @@ def parseBam(inputBam, inputRef, outputFile):
                     if i < index1:
                         for variant in currentPositionVariants[i]:
                             print(variant[0], i, variant[1], variant[2],
-                                  variant[3], "50", "PASS","NS="+str(variant[4]), sep="\t")
+                                  variant[3], "50", "PASS", "NS="+str(variant[4]), sep="\t")
                         del currentPositionVariants[i]
                     else:
                         break
 
-                # myGraph.printGraph()
+                myGraph.printGraph()
                 # break
 
     # print the rest of the variants that haven't been removed from the list
@@ -191,7 +215,7 @@ def parseBam(inputBam, inputRef, outputFile):
     for i in sorted(currentPositionVariants):
         for variant in currentPositionVariants[i]:
             print(variant[0], i, variant[1], variant[2], variant[3],
-                  "50","PASS","NS="+str(variant[4]), sep="\t")
+                  "50", "PASS", "NS="+str(variant[4]), sep="\t")
     samfile.close()
 
 
@@ -278,7 +302,7 @@ def findClosestIndex(refPos, index, lessThan=True):
         if pos is not None:
             if pos > index:
                 if lessThan:
-                    if i == 0 or lastRealRefPos==0:
+                    if i == 0 or lastRealRefPos == 0:
                         return 0
                     return lastRealRefPos-1
                 else:
@@ -315,7 +339,7 @@ class Node:
         if newIn in self.ins:
             self.ins[newIn][reverse] += addCount
         else:
-            self.ins[newIn] = [0,0]
+            self.ins[newIn] = [0, 0]
             self.ins[newIn][reverse] += addCount
 
     def addOut(self, newOut, reverse, ref):
@@ -326,17 +350,20 @@ class Node:
         if newOut in self.out:
             self.out[newOut][reverse] += addCount
         else:
-            self.out[newOut] = [0,0]
+            self.out[newOut] = [0, 0]
             self.out[newOut][reverse] += addCount
 
     def addRefPos(self, pos):
+        """
+        Add a reference pos to a ref node
+        """
         self.refPos.append(pos)
 
 class Graph:
     """
     A collection of nodes.
     """
-    def __init__(self, name,chr, pos1, pos2, k):
+    def __init__(self, name, chr, pos1, pos2, k):
         self.name = name
         self.nodes = {}
         self.totalEdges = 0
@@ -388,9 +415,9 @@ class Graph:
             for node in allNodes:
                 outs = list(self.nodes[node].out.keys())
                 ins = list(self.nodes[node].ins.keys())
-                if len(outs) <= 0 and self.nodes[node].ref == False:
+                if len(outs) <= 0 and self.nodes[node].ref is False:
                     self.removeNode(node)
-                elif len(ins) <= 0 and self.nodes[node].ref == False:
+                elif len(ins) <= 0 and self.nodes[node].ref is False:
                     self.removeNode(node)
             if numberNodes > len(self.nodes.keys()):
                 numberNodes = len(self.nodes.keys())
@@ -398,6 +425,9 @@ class Graph:
                 changed = False
 
     def removeNode(self, nodeName):
+        """
+        Remove a node from the graph with the given nodeName
+        """
         node = self.nodes[nodeName]
         for ins in node.ins.keys():
             del self.nodes[ins].out[nodeName]
@@ -406,7 +436,10 @@ class Graph:
         del self.nodes[nodeName]
 
     def cleanNodes(self):
-        for nodeName, node in self.nodes.items():
+        """
+        dfs helper function, sets all nodes to unvisited state
+        """
+        for node in self.nodes.values():
             node.visited = False
 
     def dfs(self, start):
@@ -420,12 +453,12 @@ class Graph:
             node, prevList = stack.pop()
             self.nodes[node].visited = True
             prevList.append(node)
-            for nextNode, count in self.nodes[node].out.items():
-                if self.nodes[nextNode].ref == True:
+            for nextNode in self.nodes[node].out.keys():
+                if self.nodes[nextNode].ref:
                     finishedList = prevList.copy()
                     finishedList.append(nextNode)
                     finishedPaths.append(finishedList)
-                elif self.nodes[nextNode].visited == False and self.nodes[nextNode].ref == False:
+                elif self.nodes[nextNode].visited is False and self.nodes[nextNode].ref is False:
                     stack.append((nextNode, prevList.copy()))
         return finishedPaths
 
@@ -442,14 +475,26 @@ class Graph:
                 ref1Pos = self.nodes[ref1].refPos
                 ref2Pos = self.nodes[ref2].refPos
 
-                if len(path) > 2 or abs(ref1Pos[0]-ref2Pos[0]) != 1:
+                # if len(path) == 2, then ref next to ref could be either normal or a variant
+                # if the abs(ref1Pos-ref2Pos) == 1 then is normal
+                nextTo = False
+                for i in ref1Pos:
+                    for j in ref2Pos:
+                        if abs(i-j) == 1:
+                            nextTo = True # have evidence that the ref is next to a ref
+                            break
+                    if nextTo:
+                        break
+
+
+                if len(path) > 2 or nextTo == False:
                     seq = self.mergeNodes(path)
                     if ref1Pos[0] < ref2Pos[0]:
-                        ref = self.findRefFromPos(ref1Pos[0],ref2Pos[0])
+                        ref = self.findRefFromPos(ref1Pos[0], ref2Pos[0])
 
-                        minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos[0],ref2Pos[0])
+                        minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos[0], ref2Pos[0])
 
-                        yield (self.chr, minPos, ".",minRef, minSeq, self.nodeStats(path)[0])
+                        yield (self.chr, minPos, ".", minRef, minSeq, self.nodeStats(path)[0])
                         # print(ref1Pos, ref2Pos, ref, seq)
                     else:
                         # cycle in graph, do not print
@@ -487,7 +532,7 @@ class Graph:
             return ref[self.k:-self.k], seq[self.k:-self.k], ref1Pos+self.k
         else:
             # thanks: https://www.cureffi.org/2014/04/24/converting-genetic-variants-to-their-minimal-representation/
-            while ( min(len(seq), len(ref)) > 1 and seq[-1] == ref[-1]):
+            while (min(len(seq), len(ref)) > 1 and seq[-1] == ref[-1]):
                 seq = seq[:-1]
                 ref = ref[:-1]
                 # strip off identical prefixes and increment position
@@ -629,7 +674,7 @@ def deBruijn(graph, k, text, reverse=True, ref=False, final=False):
     for i in range(0, len(text) - k):
         node1 = text[i:i + k]
         node2 = text[i + 1:i + k + 1]
-        if ref and final==False:
+        if ref and final is False:
             if node1 in graph.nodes and node2 in graph.nodes:
                 return False
         graph.addEdge(node1, node2, reverse, ref)
@@ -638,11 +683,14 @@ def deBruijn(graph, k, text, reverse=True, ref=False, final=False):
 
 
 def argParser():
-    parser=argparse.ArgumentParser(add_help=True)
-    parser.add_argument("--outputFile","-o",
+    """
+    Parse user inputs.
+    """
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--outputFile", "-o",
                         type=str,
                         help="specify the file name of the output file")
-    parser.add_argument("--inputBam","-i",
+    parser.add_argument("--inputBam", "-i",
                         type=str,
                         help="specify the file name of the input BAM file")
     parser.add_argument("--inputRef", "-r",
@@ -652,8 +700,11 @@ def argParser():
     return vars(parser.parse_args())
 
 def main():
+    """
+    Collect user input and find variants.
+    """
     args = argParser()
-    parseBam(args["inputBam"], args["inputRef"],args["outputFile"])
+    parseBam(args["inputBam"], args["inputRef"], args["outputFile"])
 
 
 
