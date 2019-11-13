@@ -1,11 +1,15 @@
 # python3 parser.py -i ../HG002_PacBio_GRCh38.bam -r ../GCA_000001405.15_GRCh38_no_alt_analysis_set.fna  -o test.txt
 
+
 import argparse
 import sys
 import math
 import pysam
 from graphviz import Digraph
 from pyfasta import Fasta
+from Bio import pairwise2
+from itertools import combinations
+from scipy import stats
 
 
 def findStartFromCigar(read, start, ref=None, seq=None, tIndex=None):
@@ -84,16 +88,18 @@ def parseBam(inputBam, inputRef, outputFile):
     :param inputRef: the fasta reference file
     :param outputFile: currently not used
     """
-
     samfile = pysam.AlignmentFile(inputBam, "rb")
+    outFile = open(outputFile, "w+")
 
     chr = "chr20"
     # startIndex = 0
     # endIndex = 64444167
-    startIndex = 153890
-    endIndex = startIndex+30
-    # startIndex = 1000000
-    # endIndex = 1050000
+    # startIndex = 130270
+    # endIndex = startIndex + 30
+    # startIndex = 1000350
+    # endIndex = startIndex + 30
+    startIndex = 1000000
+    endIndex = 1050000
     k = 8
     windowSize = 30
     windowOverlap = 5
@@ -122,7 +128,7 @@ def parseBam(inputBam, inputRef, outputFile):
         reads = samfile.fetch('chr20', largeSegStart, largeSegEnd)
         savedRead = next(reads, None)
 
-        if savedRead is not None:
+        if savedRead != None:
 
             for interval in range(largeSegStart, largeSegEnd - windowSize + 1, windowOverlap):
                 index1 = interval
@@ -163,16 +169,19 @@ def parseBam(inputBam, inputRef, outputFile):
                 removeUpToHere = 0
                 # update cursors and add seq to graph
                 # print(index1, index2)
-                for i, cursor in enumerate(cursors):
-                    read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursor
+                savedWindowedReads = []
+                for i in range(0, len(cursors)):
+                    read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
                     cursors[i] = findStartFromCigar(read, index1, ref=savedRef, seq=savedSeq, tIndex=cigarIndex)
-                    read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursor
+                    read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
 
                     if refPosStart >= index1 and refPosStart <= index2:
                         # get the appropiate sequence
                         r, refPosEnd, t, seqPosEnd = findEndFromCigar(read, savedRef, cigarIndex, savedSeq, index2)
 
                         windowedRead = read.query_alignment_sequence[seqPosStart:seqPosEnd]
+                        if len(windowedRead):
+                            savedWindowedReads.append(windowedRead)
                         # print(refPosStart, refPosEnd, windowedRead)
                         deBruijn(myGraph, changedk, windowedRead, read.is_reverse)
                     else:
@@ -183,7 +192,9 @@ def parseBam(inputBam, inputRef, outputFile):
                 # myGraph.collapsedGraph()
 
                 # find the variants and add to currentPositionVariants
-                for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findVariants(refNodes):
+                # for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findVariants(refNodes):
+                myGraph.performSearch(refNodes[0])
+                for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findPaths():
                     if POS in currentPositionVariants:
                         sameVariant = False
                         for variant in currentPositionVariants[POS]:
@@ -207,7 +218,108 @@ def parseBam(inputBam, inputRef, outputFile):
                     else:
                         break
 
-                myGraph.printGraph()
+                alignments = []
+                # which path do you belong to the best?
+                for path in myGraph.discovered:
+                    newAlignments = []
+                    for read in savedWindowedReads:
+                        newAlignments.append(max(i[2] for i in pairwise2.align.globalms(mergeNodes(path), read, 2, -1, -.5, -.1)))
+                    alignments.append(newAlignments)
+                    # print(newAlignments)
+
+
+                bestPath = -1
+                bestCount = 0
+                for i in range(0, len(myGraph.discovered)):
+                    averageAlign = sum(alignments[i])/len(alignments[i])
+                    if averageAlign > bestCount:
+                        bestPath = i
+                        bestCount = averageAlign
+                # print(bestPath, bestCount)
+
+                if len(myGraph.discovered) > 1:
+                    best2Comb = []
+                    best2AvgCount = 0
+                    best2Count = []
+                    best2Paths = []
+                    comb = combinations([i for i in range(0, len(myGraph.discovered))], 2)
+                    for c in comb:
+
+                        oneComb = []
+                        oneCombCount = []
+
+                        for i in range(0, len(savedWindowedReads)):
+                            bestOfComb = -1
+                            bestOfCombCount = 0
+                            for j in c:
+                                if bestOfCombCount < alignments[j][i]:
+                                    bestOfComb = j
+                                    bestOfCombCount = alignments[j][i]
+                            oneComb.append(bestOfComb)
+                            oneCombCount.append(bestOfCombCount)
+
+                        averageAlign = sum(oneCombCount) / len(oneCombCount)
+                        if averageAlign > best2AvgCount:
+                            best2Comb = c
+                            best2AvgCount = averageAlign
+                            best2Paths = oneComb
+                            best2Count = oneCombCount
+                    # print(best2Comb)
+                    # print(best2AvgCount)
+                    # print(best2Paths)
+
+                    #lets try a t-test?
+                    comb1 = []
+                    comb2 = []
+                    for i in range(0, len(best2Count)):
+                        if best2Paths[i] == best2Comb[0]:
+                            comb1.append(best2Count[i])
+                        else:
+                            comb2.append(best2Count[i])
+                    # print(comb1, comb2)
+                    # print(myGraph.discovered)
+
+
+
+                    t2, p2 = stats.ttest_ind(comb1, comb2)
+                    # print(t2, p2)
+
+                    cutoff = .1
+                    if p2 > cutoff:
+                        # same population
+                        # print("one population", bestPath)
+                        for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findPaths(selectedPaths=[bestPath]):
+                            outFile.write("one population "+str(p2)+" " + str(bestPath) + "\n")
+                            outFile.write('\t'.join([CHROM, str(POS), ID, REF, ALT, str(MINCOUNT)]) + '\n')
+                    else:
+                        # print("two populations", best2Comb)
+                        for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findPaths(selectedPaths=best2Comb):
+                            outFile.write("two populations "+str(p2)+" " + str(best2Comb) + "\n")
+                            outFile.write('\t'.join(
+                                [CHROM, str(POS), ID, REF, ALT,
+                                 str(MINCOUNT)]) + '\n')
+
+                else:
+                    # print("one population", bestPath)
+                    for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findPaths(selectedPaths=[bestPath]):
+                        outFile.write("one population" + str(bestPath) + "\n")
+                        outFile.write('\t'.join([CHROM, str(POS), ID, REF, ALT,
+                                                 str(MINCOUNT)]) + '\n')
+
+
+
+                # for i in range(0, len(savedWindowedReads)):
+                #     savedPath = -1
+                #     savedCount = 0
+                #     for j in range(0, len(myGraph.discovered)):
+                #         if savedCount < alignments[j][i]:
+                #             savedPath = j
+                #             savedCount = alignments[j][i]
+                #     print(savedPath)
+
+
+
+                # myGraph.printGraph()
                 # break
 
     # print the rest of the variants that haven't been removed from the list
@@ -217,78 +329,6 @@ def parseBam(inputBam, inputRef, outputFile):
             print(variant[0], i, variant[1], variant[2], variant[3],
                   "50", "PASS", "NS="+str(variant[4]), sep="\t")
     samfile.close()
-
-
-
-    # for interval in range(startIndex, endIndex - windowSize+1, windowOverlap):
-    #     index1 = interval
-    #     index2 = interval + windowSize
-    #
-    #     myGraph = Graph(chr+"_"+str(index1)+"_"+str(index2), chr, index1, index2, k)
-    #     index1 -= 1
-    #
-    #     # get the ref sequence
-    #     f = Fasta(inputRef)
-    #     ref = f["chr20  AC:CM000682.2  gi:568336004  LN:64444167  rl:Chromosome  M5:b18e6c531b0bd70e949a7fc20859cb01  AS:GRCh38"][index1:index2]
-    #
-    #     refNodes = deBruijn(myGraph, k, ref, ref=True)
-    #     i = index1 + 1
-    #     for node in refNodes:
-    #         myGraph.nodes[node].ref = True
-    #         myGraph.nodes[node].addRefPos(i)
-    #         i += 1
-    #     myGraph.ref = ref
-    #
-    #     for read in samfile.fetch('chr20', index1, index2):
-    #         refPos = read.get_reference_positions(full_length=True)
-    #         # cigar = read.cigartuples
-    #         # print(cigar)
-    #
-    #         if index1 in refPos:
-    #             seqFirstIndex = refPos.index(index1)
-    #         else:
-    #             seqFirstIndex = findClosestIndex(refPos, index1, True)
-    #
-    #         if index2 in refPos:
-    #             seqLastIndex = refPos.index(index2)
-    #         else:
-    #             seqLastIndex = findClosestIndex(refPos, index2, False)
-    #
-    #         windowedRead = read.query_alignment_sequence[seqFirstIndex:seqLastIndex]
-    #         deBruijn(myGraph, k, windowedRead, read.is_reverse)
-    #
-    #     myGraph.pruneGraph(5)
-    #     # myGraph.collapsedGraph()
-    #
-    #     # find the variants and add to currentPositionVariants
-    #     for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findVariants(refNodes):
-    #         if POS in currentPositionVariants:
-    #             sameVariant = False
-    #             for variant in currentPositionVariants[POS]:
-    #                 if variant[2] == REF and variant[3] == ALT:
-    #                     variant[4] = max(MINCOUNT, variant[4])
-    #                     sameVariant = True
-    #             if sameVariant == False:
-    #                 currentPositionVariants[POS].append([CHROM, ID, REF, ALT, MINCOUNT])
-    #         else:
-    #             currentPositionVariants[POS] = [[CHROM, ID, REF, ALT, MINCOUNT]]
-    #
-    #     # print variants with pos smaller than start index
-    #     for i in sorted(currentPositionVariants):
-    #         if i < index1:
-    #             for variant in currentPositionVariants[i]:
-    #                 print(variant[0], i, variant[1], variant[2], variant[3], "50","PASS","NS="+str(variant[4]), sep="\t")
-    #             del currentPositionVariants[i]
-    #         else:
-    #             break
-    #
-    #     # myGraph.printGraph()
-    #
-    # # print the rest of the variants that haven't been removed from the list
-    # for i in sorted(currentPositionVariants):
-    #     for variant in currentPositionVariants[i]:
-    #         print(variant[0], i, variant[1], variant[2], variant[3], "50","PASS","NS="+str(variant[4]), sep="\t")
-    # samfile.close()
 
 
 
@@ -442,87 +482,112 @@ class Graph:
         for node in self.nodes.values():
             node.visited = False
 
-    def dfs(self, start):
-        """
-        Do a Depth First Search based search of the graph for paths
-        """
-        self.cleanNodes()
-        finishedPaths = []
-        stack = [(start, [])]
-        while stack:
-            node, prevList = stack.pop()
-            self.nodes[node].visited = True
-            prevList.append(node)
-            for nextNode in self.nodes[node].out.keys():
-                if self.nodes[nextNode].ref:
-                    finishedList = prevList.copy()
-                    finishedList.append(nextNode)
-                    finishedPaths.append(finishedList)
-                elif self.nodes[nextNode].visited is False and self.nodes[nextNode].ref is False:
-                    stack.append((nextNode, prevList.copy()))
-        return finishedPaths
+    # def dfs(self, start):
+    #     """
+    #     Do a Depth First Search based search of the graph for paths
+    #     """
+    #     self.cleanNodes()
+    #     finishedPaths = []
+    #     stack = [(start, [])]
+    #     while stack:
+    #         node, prevList = stack.pop()
+    #         self.nodes[node].visited = True
+    #         prevList.append(node)
+    #         for nextNode in self.nodes[node].out.keys():
+    #             if self.nodes[nextNode].ref:
+    #                 finishedList = prevList.copy()
+    #                 finishedList.append(nextNode)
+    #                 finishedPaths.append(finishedList)
+    #             elif self.nodes[nextNode].visited is False and self.nodes[nextNode].ref is False:
+    #                 stack.append((nextNode, prevList.copy()))
+    #     return finishedPaths
+    #
+    # def findVariants(self, refNodes):
+    #     """
+    #     Locate variants in the given graph.
+    #     """
+    #     # CHROM POS ID REF ALT QUAL FILTER INFO FORMAT NA00001 NA00002 NA00003
+    #     for refNode in refNodes:
+    #         for path in self.dfs(refNode):
+    #             ref1 = path[0]
+    #             ref2 = path[-1]
+    #
+    #             ref1Pos = self.nodes[ref1].refPos
+    #             ref2Pos = self.nodes[ref2].refPos
+    #
+    #             # if len(path) == 2, then ref next to ref could be either normal or a variant
+    #             # if the abs(ref1Pos-ref2Pos) == 1 then is normal
+    #             nextTo = False
+    #             for i in ref1Pos:
+    #                 for j in ref2Pos:
+    #                     if abs(i - j) == 1:
+    #                         nextTo = True  # have evidence that the ref is next to a ref
+    #                         break
+    #                 if nextTo:
+    #                     break
+    #
+    #             if len(path) > 2 or nextTo == False:
+    #                 seq = self.mergeNodes(path)
+    #                 if ref1Pos[0] < ref2Pos[0]:
+    #                     ref = self.findRefFromPos(ref1Pos[0], ref2Pos[0])
+    #
+    #                     minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos[0], ref2Pos[0])
+    #
+    #                     yield (self.chr, minPos, ".", minRef, minSeq, self.nodeStats(path)[0])
+    #                     # print(ref1Pos, ref2Pos, ref, seq)
+    #                 else:
+    #                     # cycle in graph, do not print
+    #                     #print("Cycle in graph")
+    #                     continue
 
-    def findVariants(self, refNodes):
-        """
-        Locate variants in the given graph.
-        """
-        # CHROM POS ID REF ALT QUAL FILTER INFO FORMAT NA00001 NA00002 NA00003
-        for refNode in refNodes:
-            for path in self.dfs(refNode):
-                ref1 = path[0]
-                ref2 = path[-1]
+    def search(self, node, discovered):
+        discovered.append(node)
 
-                ref1Pos = self.nodes[ref1].refPos
-                ref2Pos = self.nodes[ref2].refPos
+        if not self.nodes[node].out.keys():  # no keys
+            self.discovered.append(discovered)
 
-                # if len(path) == 2, then ref next to ref could be either normal or a variant
-                # if the abs(ref1Pos-ref2Pos) == 1 then is normal
-                nextTo = False
-                for i in ref1Pos:
-                    for j in ref2Pos:
-                        if abs(i-j) == 1:
-                            nextTo = True # have evidence that the ref is next to a ref
-                            break
-                    if nextTo:
-                        break
+        for nextNode in self.nodes[node].out.keys():
+            if nextNode not in discovered:
+                self.search(nextNode, discovered.copy())
+            else: # broke cycle, so add this path
+                self.discovered.append(discovered)
 
+    def performSearch(self, startingNode):
+        self.discovered = []
+        self.search(startingNode, [])
 
-                if len(path) > 2 or nextTo == False:
-                    seq = self.mergeNodes(path)
-                    if ref1Pos[0] < ref2Pos[0]:
-                        ref = self.findRefFromPos(ref1Pos[0], ref2Pos[0])
-
-                        minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos[0], ref2Pos[0])
-
-                        yield (self.chr, minPos, ".", minRef, minSeq, self.nodeStats(path)[0])
-                        # print(ref1Pos, ref2Pos, ref, seq)
-                    else:
-                        # cycle in graph, do not print
-                        #print("Cycle in graph")
-                        continue
+    def findPaths(self, selectedPaths=False):
+        chosenPaths = []
+        if selectedPaths:
+            for p in selectedPaths:
+                chosenPaths.append(self.discovered[p])
+        else:
+            chosenPaths = self.discovered
 
 
-                # else:
-                #     # if deletions this should be called
-                #     # however, make sure that counts are high to be called?
-                #     # actually more thought should be put into this
-                #     nextToEachOther = None
-                #     for pos1 in ref1Pos:
-                #         for pos2 in ref2Pos:
-                #             if nextToEachOther:
-                #                 break
-                #             elif abs(pos2 - pos1) > 1:
-                #                 nextToEachOther = False
-                #                 p1 = pos1
-                #                 p2 = pos2
-                #             else:
-                #                 nextToEachOther = True
-                #                 break
-                #     if nextToEachOther == False:
-                #         if self.nodes[ref1].out[ref2] > 1:
-                #             print(path, ref1Pos, ref2Pos, ref1+ref2[-1])
+        for path in chosenPaths:
+            startRef = 0
+            switch = False
+            endRef = len(path)
+            for i in range(0, len(path)):
+                if self.nodes[path[i]].ref:
+                    if switch and endRef > i:
+                        endRef = i + 1
 
-
+                    elif not switch and startRef < i:
+                        startRef = i
+                else:
+                    switch = True
+            if switch:
+                seq = mergeNodes(path[startRef:endRef])
+                # should always start on ref
+                ref1Pos = self.nodes[path[startRef]].refPos[0]
+                # what if don't end on ref? Ignore path.
+                if self.nodes[path[endRef-1]].ref:
+                    ref2Pos = self.nodes[path[endRef-1]].refPos[0]
+                    ref = self.findRefFromPos(ref1Pos, ref2Pos)
+                    minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos, ref2Pos)
+                    yield (self.chr, minPos, ".", minRef, minSeq, self.nodeStats(path[startRef:endRef])[0])
 
     def findMinRepresentation(self, ref, seq, ref1Pos, ref2Pos):
         """
@@ -542,9 +607,6 @@ class Graph:
                 ref1Pos += 1
             return ref, seq, ref1Pos
 
-
-
-
     def findCandidateStarts(self):
         """
         Find nodes with no ins.
@@ -554,15 +616,6 @@ class Graph:
             if len(node.ins) == 0:
                 candidateStarts.append(node)
         return candidateStarts
-
-    def mergeNodes(self, kmers):
-        """
-        Create the string formed by kmers. Kmers in correct order.
-        """
-        text = kmers[0]
-        for i in range(1, len(kmers)):
-            text = text + kmers[i][-1]
-        return text
 
     def nodeStats(self, kmers):
         """
@@ -681,12 +734,20 @@ def deBruijn(graph, k, text, reverse=True, ref=False, final=False):
         nodes.append(node2)
     return nodes
 
+def mergeNodes(kmers):
+    """
+    Create the string formed by kmers. Kmers in correct order.
+    """
+    text = kmers[0]
+    for i in range(1, len(kmers)):
+        text = text + kmers[i][-1]
+    return text
 
 def argParser():
     """
     Parse user inputs.
     """
-    parser = argparse.ArgumentParser(add_help=True)
+    parser=argparse.ArgumentParser(add_help=True)
     parser.add_argument("--outputFile", "-o",
                         type=str,
                         help="specify the file name of the output file")
