@@ -96,7 +96,7 @@ def parseBam(inputBam, inputRef, outputFile):
     # endIndex = 64444167
     # startIndex = 130270
     # endIndex = startIndex + 30
-    # startIndex = 1000350
+    # startIndex = 1019800
     # endIndex = startIndex + 30
     startIndex = 1000000
     endIndex = 1050000
@@ -113,6 +113,9 @@ def parseBam(inputBam, inputRef, outputFile):
     print("##fileformat=VCFv4.3")
     print("##reference=GCA_000001405.15")
     print('##INFO=<ID=NS,Number=1,Type=Integer,Description="Number of Samples With Data">')
+    print('##INFO=<ID=FA,Number=1,Type=Integer,Description="Fraction of samples following GT genotype">')
+    print('##INFO=<ID=FF,Number=1,Type=Integer,Description="Fraction of reads in the forward direction">')
+    print('##INFO=<ID=AS,Number=1,Type=Integer,Description="Sum of alignment score for one genotype subtracted by the other">')
     print('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">')
     print('##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">')
     print("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")
@@ -191,32 +194,33 @@ def parseBam(inputBam, inputRef, outputFile):
                 myGraph.pruneGraph(2)
                 # myGraph.collapsedGraph()
 
-                # find the variants and add to currentPositionVariants
-                # for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findVariants(refNodes):
+                # find paths
                 myGraph.performSearch(refNodes[0])
-                for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findPaths():
-                    if POS in currentPositionVariants:
-                        sameVariant = False
-                        for variant in currentPositionVariants[POS]:
-                            if variant[2] == REF and variant[3] == ALT:
-                                variant[4] = max(MINCOUNT, variant[4])
-                                sameVariant = True
-                        if sameVariant == False:
-                            currentPositionVariants[POS].append(
-                                [CHROM, ID, REF, ALT, MINCOUNT])
-                    else:
-                        currentPositionVariants[POS] = [
-                            [CHROM, ID, REF, ALT, MINCOUNT]]
 
-                # print variants with pos smaller than start index
-                for i in sorted(currentPositionVariants):
-                    if i < index1:
-                        for variant in currentPositionVariants[i]:
-                            print(variant[0], i, variant[1], variant[2],
-                                  variant[3], "50", "PASS", "NS="+str(variant[4]), sep="\t")
-                        del currentPositionVariants[i]
-                    else:
-                        break
+                # # find the variants and add to currentPositionVariants
+                # for CHROM, POS, ID, REF, ALT, MINCOUNT, FRACFORWARD in myGraph.findPaths():
+                #     if POS in currentPositionVariants:
+                #         sameVariant = False
+                #         for variant in currentPositionVariants[POS]:
+                #             if variant[2] == REF and variant[3] == ALT:
+                #                 variant[4] = max(MINCOUNT, variant[4])
+                #                 sameVariant = True
+                #         if sameVariant == False:
+                #             currentPositionVariants[POS].append(
+                #                 [CHROM, ID, REF, ALT, MINCOUNT])
+                #     else:
+                #         currentPositionVariants[POS] = [
+                #             [CHROM, ID, REF, ALT, MINCOUNT]]
+                #
+                # # print variants with pos smaller than start index
+                # for i in sorted(currentPositionVariants):
+                #     if i < index1:
+                #         for variant in currentPositionVariants[i]:
+                #             print(variant[0], i, variant[1], variant[2],
+                #                   variant[3], "50", "PASS", "NS="+str(variant[4]), sep="\t")
+                #         del currentPositionVariants[i]
+                #     else:
+                #         break
 
                 alignments = []
                 # which path do you belong to the best?
@@ -229,105 +233,110 @@ def parseBam(inputBam, inputRef, outputFile):
 
 
                 bestPath = -1
-                bestCount = 0
+                bestAvgCount = -1
+                bestSumCount = -1
                 for i in range(0, len(myGraph.discovered)):
-                    averageAlign = sum(alignments[i])/len(alignments[i])
-                    if averageAlign > bestCount:
+                    if len(alignments[i]):
+                        averageAlign = sum(alignments[i])/len(alignments[i])
+                    else:
+                        averageAlign = 0
+
+                    if averageAlign > bestAvgCount:
+                        bestSumCount = sum(alignments[i])
                         bestPath = i
-                        bestCount = averageAlign
-                # print(bestPath, bestCount)
+                        bestAvgCount = averageAlign
+                # print(bestPath, bestAvgCount)
+
 
                 if len(myGraph.discovered) > 1:
                     best2Comb = []
-                    best2AvgCount = 0
-                    best2Count = []
+                    best2AvgAlignment = -1
+                    best2AlignmentForEachRead = []
                     best2Paths = []
                     comb = combinations([i for i in range(0, len(myGraph.discovered))], 2)
+
+                    # for each combination
                     for c in comb:
+                        pathForEachRead = []
+                        alignmentForEachRead = []
 
-                        oneComb = []
-                        oneCombCount = []
-
+                        # for each read
                         for i in range(0, len(savedWindowedReads)):
-                            bestOfComb = -1
-                            bestOfCombCount = 0
+                            bestPathForRead = -1
+                            bestAlignmentScoreForRead = -1
+
+                            # for each path in combination
                             for j in c:
-                                if bestOfCombCount < alignments[j][i]:
-                                    bestOfComb = j
-                                    bestOfCombCount = alignments[j][i]
-                            oneComb.append(bestOfComb)
-                            oneCombCount.append(bestOfCombCount)
-
-                        averageAlign = sum(oneCombCount) / len(oneCombCount)
-                        if averageAlign > best2AvgCount:
+                                if bestAlignmentScoreForRead < alignments[j][i]:
+                                    bestPathForRead = j
+                                    bestAlignmentScoreForRead = alignments[j][i]
+                            pathForEachRead.append(bestPathForRead)
+                            alignmentForEachRead.append(bestAlignmentScoreForRead)
+                        if len(alignmentForEachRead):
+                            averageAlign = sum(alignmentForEachRead) / len(alignmentForEachRead)
+                        else:
+                            averageAlign = 0
+                        if averageAlign > best2AvgAlignment:
                             best2Comb = c
-                            best2AvgCount = averageAlign
-                            best2Paths = oneComb
-                            best2Count = oneCombCount
-                    # print(best2Comb)
-                    # print(best2AvgCount)
-                    # print(best2Paths)
+                            best2AvgAlignment = averageAlign
+                            best2Paths = pathForEachRead
+                            best2AlignmentForEachRead = alignmentForEachRead
 
-                    #lets try a t-test?
+
                     comb1 = []
                     comb2 = []
-                    for i in range(0, len(best2Count)):
+                    for i in range(0, len(best2AlignmentForEachRead)):
                         if best2Paths[i] == best2Comb[0]:
-                            comb1.append(best2Count[i])
+                            comb1.append(best2AlignmentForEachRead[i])
                         else:
-                            comb2.append(best2Count[i])
-                    # print(comb1, comb2)
-                    # print(myGraph.discovered)
+                            comb2.append(best2AlignmentForEachRead[i])
+
+                    outFile.write(str(sum(best2AlignmentForEachRead) - bestSumCount)+ "\n" )
+
+                    bestPathForEachRead = [comb1, comb2]
+
+                    # find the variants and add to currentPositionVariants
+                    # for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findVariants(refNodes):
+                    for c in range(0, len(best2Comb)):
+                        for CHROM, POS, ID, REF, ALT, MINCOUNT, FRACFORWARD in myGraph.findPaths([best2Comb[c]]):
+                            FA = len(bestPathForEachRead[c]) / len(best2AlignmentForEachRead)
+                            AS = sum(best2AlignmentForEachRead) - bestSumCount
+                            if POS in currentPositionVariants:
+                                sameVariant = False
+                                for variant in currentPositionVariants[POS]:
+                                    if variant[2] == REF and variant[3] == ALT:
+                                        variant[4] = max(MINCOUNT, variant[4])
+                                        sameVariant = True
+                                if sameVariant == False:
+                                    currentPositionVariants[POS].append(
+                                        [CHROM, ID, REF, ALT, MINCOUNT, FRACFORWARD, FA, AS])
+                            else:
+                                currentPositionVariants[POS] = [
+                                    [CHROM, ID, REF, ALT, MINCOUNT, FRACFORWARD, FA, AS]]
+
+                        # print variants with pos smaller than start index
+                        for i in sorted(currentPositionVariants):
+                            if i < index1:
+                                for variant in currentPositionVariants[i]:
+                                    print(variant[0], i, variant[1], variant[2],
+                                          variant[3], "50", "PASS",
+                                          "NS=" + str(variant[4])+ ";FF=" + str(variant[5]) + ";FA=" + str(variant[6]) + ";AS=" + str(variant[7]), sep="\t")
+                                del currentPositionVariants[i]
+                            else:
+                                break
 
 
 
-                    t2, p2 = stats.ttest_ind(comb1, comb2)
-                    # print(t2, p2)
-
-                    cutoff = .1
-                    if p2 > cutoff:
-                        # same population
-                        # print("one population", bestPath)
-                        for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findPaths(selectedPaths=[bestPath]):
-                            outFile.write("one population "+str(p2)+" " + str(bestPath) + "\n")
-                            outFile.write('\t'.join([CHROM, str(POS), ID, REF, ALT, str(MINCOUNT)]) + '\n')
-                    else:
-                        # print("two populations", best2Comb)
-                        for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findPaths(selectedPaths=best2Comb):
-                            outFile.write("two populations "+str(p2)+" " + str(best2Comb) + "\n")
-                            outFile.write('\t'.join(
-                                [CHROM, str(POS), ID, REF, ALT,
-                                 str(MINCOUNT)]) + '\n')
-
-                else:
-                    # print("one population", bestPath)
-                    for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findPaths(selectedPaths=[bestPath]):
-                        outFile.write("one population" + str(bestPath) + "\n")
-                        outFile.write('\t'.join([CHROM, str(POS), ID, REF, ALT,
-                                                 str(MINCOUNT)]) + '\n')
-
-
-
-                # for i in range(0, len(savedWindowedReads)):
-                #     savedPath = -1
-                #     savedCount = 0
-                #     for j in range(0, len(myGraph.discovered)):
-                #         if savedCount < alignments[j][i]:
-                #             savedPath = j
-                #             savedCount = alignments[j][i]
-                #     print(savedPath)
-
-
-
-                # myGraph.printGraph()
-                # break
 
     # print the rest of the variants that haven't been removed from the list
     # do this at the end or else ordering might be off
     for i in sorted(currentPositionVariants):
         for variant in currentPositionVariants[i]:
-            print(variant[0], i, variant[1], variant[2], variant[3],
-                  "50", "PASS", "NS="+str(variant[4]), sep="\t")
+            print(variant[0], i, variant[1], variant[2],
+                  variant[3], "50", "PASS",
+                  "NS=" + str(variant[4]) + ";FF=" + str(
+                      variant[5]) + ";FA=" + str(variant[6]) + ";AS=" + str(
+                      variant[7]), sep="\t")
     samfile.close()
 
 
@@ -587,7 +596,8 @@ class Graph:
                     ref2Pos = self.nodes[path[endRef-1]].refPos[0]
                     ref = self.findRefFromPos(ref1Pos, ref2Pos)
                     minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos, ref2Pos)
-                    yield (self.chr, minPos, ".", minRef, minSeq, self.nodeStats(path[startRef:endRef])[0])
+                    minCount, maxCount, average, fractionForward = self.nodeStats(path[startRef:endRef])
+                    yield (self.chr, minPos, ".", minRef, minSeq, minCount, fractionForward)
 
     def findMinRepresentation(self, ref, seq, ref1Pos, ref2Pos):
         """
@@ -622,12 +632,15 @@ class Graph:
         Find the minimum, maximum, and average counts of the given kmers
         """
         counts = []
+        numberForward = 0
         for i in range(1, len(kmers)):
             counts.append(sum(self.nodes[kmers[i-1]].out[kmers[i]]))
+            numberForward += self.nodes[kmers[i-1]].out[kmers[i]][0]
         minCount = min(counts)
         maxCount = max(counts)
         average = sum(counts)/len(counts)
-        return (minCount, maxCount, average)
+
+        return (minCount, maxCount, average, numberForward/sum(counts))
 
     def findRefFromPos(self, pos1, pos2):
         """
