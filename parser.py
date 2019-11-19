@@ -96,10 +96,13 @@ def parseBam(inputBam, inputRef, outputFile):
     # endIndex = 64444167
     # startIndex = 130270
     # endIndex = startIndex + 30
-    # startIndex = 1019800
+    # startIndex = 1019800 # no reads are seen
     # endIndex = startIndex + 30
-    startIndex = 1000000
-    endIndex = 1050000
+    startIndex = 2972880
+    endIndex = startIndex + 30
+
+    # startIndex = 2000000
+    # endIndex = 3000000
     k = 8
     windowSize = 30
     windowOverlap = 5
@@ -196,6 +199,7 @@ def parseBam(inputBam, inputRef, outputFile):
 
                 # find paths
                 myGraph.performSearch(refNodes[0])
+                myGraph.printGraph()
 
                 # # find the variants and add to currentPositionVariants
                 # for CHROM, POS, ID, REF, ALT, MINCOUNT, FRACFORWARD in myGraph.findPaths():
@@ -225,6 +229,7 @@ def parseBam(inputBam, inputRef, outputFile):
                 alignments = []
                 # which path do you belong to the best?
                 for path in myGraph.discovered:
+                    # print(path)
                     newAlignments = []
                     for read in savedWindowedReads:
                         newAlignments.append(max(i[2] for i in pairwise2.align.globalms(mergeNodes(path), read, 2, -1, -.5, -.1)))
@@ -281,7 +286,6 @@ def parseBam(inputBam, inputRef, outputFile):
                             best2AvgAlignment = averageAlign
                             best2Paths = pathForEachRead
                             best2AlignmentForEachRead = alignmentForEachRead
-
 
                     comb1 = []
                     comb2 = []
@@ -594,10 +598,13 @@ class Graph:
                 # what if don't end on ref? Ignore path.
                 if self.nodes[path[endRef-1]].ref:
                     ref2Pos = self.nodes[path[endRef-1]].refPos[0]
-                    ref = self.findRefFromPos(ref1Pos, ref2Pos)
-                    minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos, ref2Pos)
-                    minCount, maxCount, average, fractionForward = self.nodeStats(path[startRef:endRef])
-                    yield (self.chr, minPos, ".", minRef, minSeq, minCount, fractionForward)
+
+                    #what if ref2 is before ref1? Ignore it!
+                    if ref1Pos -  ref2Pos <= 0:
+                        ref = self.findRefFromPos(ref1Pos, ref2Pos)
+                        minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos, ref2Pos)
+                        minCount, maxCount, average, fractionForward = self.nodeStats(path[startRef:endRef])
+                        yield (self.chr, minPos, ".", minRef, minSeq, minCount, fractionForward)
 
     def findMinRepresentation(self, ref, seq, ref1Pos, ref2Pos):
         """
