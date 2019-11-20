@@ -163,7 +163,6 @@ def parseBam(inputBam, inputRef, outputFile):
 
 
                 # check if need to add any new cursors
-
                 while savedRead:
                     read = savedRead
                     refPos = read.reference_start
@@ -199,32 +198,7 @@ def parseBam(inputBam, inputRef, outputFile):
 
                 # find paths
                 myGraph.performSearch(refNodes[0])
-                myGraph.printGraph()
-
-                # # find the variants and add to currentPositionVariants
-                # for CHROM, POS, ID, REF, ALT, MINCOUNT, FRACFORWARD in myGraph.findPaths():
-                #     if POS in currentPositionVariants:
-                #         sameVariant = False
-                #         for variant in currentPositionVariants[POS]:
-                #             if variant[2] == REF and variant[3] == ALT:
-                #                 variant[4] = max(MINCOUNT, variant[4])
-                #                 sameVariant = True
-                #         if sameVariant == False:
-                #             currentPositionVariants[POS].append(
-                #                 [CHROM, ID, REF, ALT, MINCOUNT])
-                #     else:
-                #         currentPositionVariants[POS] = [
-                #             [CHROM, ID, REF, ALT, MINCOUNT]]
-                #
-                # # print variants with pos smaller than start index
-                # for i in sorted(currentPositionVariants):
-                #     if i < index1:
-                #         for variant in currentPositionVariants[i]:
-                #             print(variant[0], i, variant[1], variant[2],
-                #                   variant[3], "50", "PASS", "NS="+str(variant[4]), sep="\t")
-                #         del currentPositionVariants[i]
-                #     else:
-                #         break
+                # myGraph.printGraph()
 
                 alignments = []
                 # which path do you belong to the best?
@@ -495,64 +469,6 @@ class Graph:
         for node in self.nodes.values():
             node.visited = False
 
-    # def dfs(self, start):
-    #     """
-    #     Do a Depth First Search based search of the graph for paths
-    #     """
-    #     self.cleanNodes()
-    #     finishedPaths = []
-    #     stack = [(start, [])]
-    #     while stack:
-    #         node, prevList = stack.pop()
-    #         self.nodes[node].visited = True
-    #         prevList.append(node)
-    #         for nextNode in self.nodes[node].out.keys():
-    #             if self.nodes[nextNode].ref:
-    #                 finishedList = prevList.copy()
-    #                 finishedList.append(nextNode)
-    #                 finishedPaths.append(finishedList)
-    #             elif self.nodes[nextNode].visited is False and self.nodes[nextNode].ref is False:
-    #                 stack.append((nextNode, prevList.copy()))
-    #     return finishedPaths
-    #
-    # def findVariants(self, refNodes):
-    #     """
-    #     Locate variants in the given graph.
-    #     """
-    #     # CHROM POS ID REF ALT QUAL FILTER INFO FORMAT NA00001 NA00002 NA00003
-    #     for refNode in refNodes:
-    #         for path in self.dfs(refNode):
-    #             ref1 = path[0]
-    #             ref2 = path[-1]
-    #
-    #             ref1Pos = self.nodes[ref1].refPos
-    #             ref2Pos = self.nodes[ref2].refPos
-    #
-    #             # if len(path) == 2, then ref next to ref could be either normal or a variant
-    #             # if the abs(ref1Pos-ref2Pos) == 1 then is normal
-    #             nextTo = False
-    #             for i in ref1Pos:
-    #                 for j in ref2Pos:
-    #                     if abs(i - j) == 1:
-    #                         nextTo = True  # have evidence that the ref is next to a ref
-    #                         break
-    #                 if nextTo:
-    #                     break
-    #
-    #             if len(path) > 2 or nextTo == False:
-    #                 seq = self.mergeNodes(path)
-    #                 if ref1Pos[0] < ref2Pos[0]:
-    #                     ref = self.findRefFromPos(ref1Pos[0], ref2Pos[0])
-    #
-    #                     minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos[0], ref2Pos[0])
-    #
-    #                     yield (self.chr, minPos, ".", minRef, minSeq, self.nodeStats(path)[0])
-    #                     # print(ref1Pos, ref2Pos, ref, seq)
-    #                 else:
-    #                     # cycle in graph, do not print
-    #                     #print("Cycle in graph")
-    #                     continue
-
     def search(self, node, discovered):
         discovered.append(node)
 
@@ -599,12 +515,14 @@ class Graph:
                 if self.nodes[path[endRef-1]].ref:
                     ref2Pos = self.nodes[path[endRef-1]].refPos[0]
 
-                    #what if ref2 is before ref1? Ignore it!
-                    if ref1Pos -  ref2Pos <= 0:
-                        ref = self.findRefFromPos(ref1Pos, ref2Pos)
-                        minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos, ref2Pos)
-                        minCount, maxCount, average, fractionForward = self.nodeStats(path[startRef:endRef])
-                        yield (self.chr, minPos, ".", minRef, minSeq, minCount, fractionForward)
+                    #what if ref2 is before ref1? swap ref1 and ref2
+                    if ref1Pos > ref2Pos:
+                        ref1Pos, ref2Pos = ref2Pos, ref1Pos
+
+                    ref = self.findRefFromPos(ref1Pos, ref2Pos)
+                    minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos, ref2Pos)
+                    minCount, maxCount, average, fractionForward = self.nodeStats(path[startRef:endRef])
+                    yield (self.chr, minPos, ".", minRef, minSeq, minCount, fractionForward)
 
     def findMinRepresentation(self, ref, seq, ref1Pos, ref2Pos):
         """
@@ -656,65 +574,6 @@ class Graph:
         start = pos1 - self.pos1
         end = pos2 - self.pos1 + self.k
         return self.ref[start:end]
-
-    # Logic to merge nodes into larger nodes
-    # def replaceNodes(self, mergeNodes, replacementNode, mergedCounts, ref=False):
-    #     self.nodes[replacementNode] = Node(replacementNode, ref=ref, merged=True, mergedCounts=mergedCounts)
-    #     self.nodes[replacementNode].ins = self.nodes[mergeNodes[0]].ins
-    #     self.nodes[replacementNode].out = self.nodes[mergeNodes[-1]].out
-    #
-    #     for inNode, count in self.nodes[mergeNodes[0]].ins.items():
-    #         del self.nodes[inNode].out[mergeNodes[0]]
-    #         self.nodes[inNode].out[replacementNode] = min(mergedCounts)
-    #
-    #     for outNode, count in self.nodes[mergeNodes[-1]].out.items():
-    #         del self.nodes[outNode].ins[mergeNodes[-1]]
-    #         self.nodes[outNode].ins[replacementNode] = min(mergedCounts)
-    #
-    #     for node in mergeNodes:
-    #         del self.nodes[node]
-    #
-    # def mergeable(self, currentNode):
-    #     print(currentNode.name, currentNode.out.values(), currentNode.ins.values())
-    #     if len(currentNode.out) == 1 and len(currentNode.ins) <= 1:
-    #         if currentNode.ref == self.nodes[list(currentNode.out.keys())[0]].ref:
-    #             for key, value in currentNode.out.items():
-    #                 return value
-    #     return False
-    #
-    # def collapsedGraph(self):
-    #     tempNodes = self.findCandidateStarts()
-    #     while tempNodes: # for each tree, should only be 1
-    #         currentNode = tempNodes.pop()
-    #         mergeableNodes = []
-    #         toSearch = [currentNode]
-    #         mergedCounts = []
-    #         while len(toSearch): # traverse down tree
-    #             currentNode.merged = True
-    #             count = self.mergeable(currentNode)
-    #             if count:
-    #                 mergeableNodes.append(currentNode)
-    #                 mergedCounts.append(count)
-    #                 currentNode=self.nodes[list(currentNode.out.keys())[0]]
-    #
-    #             else:
-    #                 if len(currentNode.out) > 1:
-    #                     mergeableNodes.append(currentNode)
-    #                     mergedCounts.append(count)
-    #                 if len(mergeableNodes) > 0:
-    #                     print("merging")
-    #
-    #                     mergedNodes = self.mergeNodes([i.name for i in mergeableNodes])
-    #                     print(mergedNodes)
-    #                     print(mergedCounts)
-    #                     self.replaceNodes([i.name for i in mergeableNodes], mergedNodes, mergedCounts)
-    #                     mergeableNodes = []
-    #                     mergedCounts = []
-    #                 for key in currentNode.out.keys():
-    #                     if self.nodes[key].merged == False:
-    #                         toSearch.append(self.nodes[key])
-    #                 currentNode = toSearch.pop()
-
 
     def printGraph(self, cutoff=0):
         """
