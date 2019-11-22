@@ -1,5 +1,5 @@
 # python3 parser.py -i ../HG002_PacBio_GRCh38.bam -r ../GCA_000001405.15_GRCh38_no_alt_analysis_set.fna  -o test.txt
-
+# python3 parser.py -i ../HG002.10kb.Sequel.pbmm2.GRCh38.whatshap.haplotag.RTG.10x.trio.bam -r ../GCA_000001405.15_GRCh38_no_alt_analysis_set.fna  -o test.txt 1> teststdin.vcf 2> teststdout.vcf
 
 import argparse
 import sys
@@ -10,7 +10,8 @@ from pyfasta import Fasta
 from Bio import pairwise2
 from itertools import combinations
 from scipy import stats
-
+import logging
+logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 
 def findStartFromCigar(read, start, ref=None, seq=None, tIndex=None):
     """
@@ -99,7 +100,7 @@ def parseBam(inputBam, inputRef, outputFile):
     # startIndex = 1019800 # no reads are seen
     # endIndex = startIndex + 30
     startIndex = 2972880
-    endIndex = startIndex + 30
+    endIndex = startIndex + 5000
 
     # startIndex = 2000000
     # endIndex = 3000000
@@ -108,6 +109,8 @@ def parseBam(inputBam, inputRef, outputFile):
     windowOverlap = 5
 
     currentPositionVariants = {}
+    variantDict = {}
+    allVariantsDict = {}
 
     if endIndex - startIndex < windowSize:
         endIndex = startIndex + windowSize
@@ -119,6 +122,7 @@ def parseBam(inputBam, inputRef, outputFile):
     print('##INFO=<ID=FA,Number=1,Type=Integer,Description="Fraction of samples following GT genotype">')
     print('##INFO=<ID=FF,Number=1,Type=Integer,Description="Fraction of reads in the forward direction">')
     print('##INFO=<ID=AS,Number=1,Type=Integer,Description="Sum of alignment score for one genotype subtracted by the other">')
+    print('##INFO=<ID=NW,Number=1,Type=Integer,Description="Number of windows variant was found in">')
     print('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">')
     print('##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">')
     print("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")
@@ -194,7 +198,6 @@ def parseBam(inputBam, inputRef, outputFile):
                         removeUpToHere = i
                 cursors = cursors[removeUpToHere:]
                 myGraph.pruneGraph(2)
-                # myGraph.collapsedGraph()
 
                 # find paths
                 myGraph.performSearch(refNodes[0])
@@ -274,47 +277,18 @@ def parseBam(inputBam, inputRef, outputFile):
                     bestPathForEachRead = [comb1, comb2]
 
                     # find the variants and add to currentPositionVariants
-                    # for CHROM, POS, ID, REF, ALT, MINCOUNT in myGraph.findVariants(refNodes):
-                    for c in range(0, len(best2Comb)):
-                        for CHROM, POS, ID, REF, ALT, MINCOUNT, FRACFORWARD in myGraph.findPaths([best2Comb[c]]):
-                            FA = len(bestPathForEachRead[c]) / len(best2AlignmentForEachRead)
-                            AS = sum(best2AlignmentForEachRead) - bestSumCount
-                            if POS in currentPositionVariants:
-                                sameVariant = False
-                                for variant in currentPositionVariants[POS]:
-                                    if variant[2] == REF and variant[3] == ALT:
-                                        variant[4] = max(MINCOUNT, variant[4])
-                                        sameVariant = True
-                                if sameVariant == False:
-                                    currentPositionVariants[POS].append(
-                                        [CHROM, ID, REF, ALT, MINCOUNT, FRACFORWARD, FA, AS])
-                            else:
-                                currentPositionVariants[POS] = [
-                                    [CHROM, ID, REF, ALT, MINCOUNT, FRACFORWARD, FA, AS]]
+                    variantDict = myGraph.findVariants(best2Comb, bestPathForEachRead, best2AlignmentForEachRead, bestSumCount, variantDict)
+                    variantDict = myGraph.printVariants(variantDict, index1)
 
-                        # print variants with pos smaller than start index
-                        for i in sorted(currentPositionVariants):
-                            if i < index1:
-                                for variant in currentPositionVariants[i]:
-                                    print(variant[0], i, variant[1], variant[2],
-                                          variant[3], "50", "PASS",
-                                          "NS=" + str(variant[4])+ ";FF=" + str(variant[5]) + ";FA=" + str(variant[6]) + ";AS=" + str(variant[7]), sep="\t")
-                                del currentPositionVariants[i]
-                            else:
-                                break
-
+                    allVariantsDict = myGraph.findVariants([i for i in range(0, len(myGraph.discovered))],bestPathForEachRead, best2AlignmentForEachRead,bestSumCount, allVariantsDict)
+                    allVariantsDict = myGraph.printVariants(allVariantsDict, index1, debug=True)
 
 
 
     # print the rest of the variants that haven't been removed from the list
     # do this at the end or else ordering might be off
-    for i in sorted(currentPositionVariants):
-        for variant in currentPositionVariants[i]:
-            print(variant[0], i, variant[1], variant[2],
-                  variant[3], "50", "PASS",
-                  "NS=" + str(variant[4]) + ";FF=" + str(
-                      variant[5]) + ";FA=" + str(variant[6]) + ";AS=" + str(
-                      variant[7]), sep="\t")
+    myGraph.printVariants(variantDict)
+    myGraph.printVariants(allVariantsDict, debug=True)
     samfile.close()
 
 
@@ -386,6 +360,23 @@ class Node:
         """
         self.refPos.append(pos)
 
+class Variant:
+    """
+    Store a variant.
+    """
+    def __init__(self, CHROM, POS, ID, REF, ALT, MINCOUNT, FRACFORWARD):
+        self.CHROM = CHROM
+        self.POS = POS
+        self.ID = ID
+        self.REF = REF
+        self.ALT = ALT
+        self.NS = MINCOUNT
+        self.FF = [FRACFORWARD]
+        self.AS = [-1]
+        self.FA = [-1]
+        self.NW = 1
+
+
 class Graph:
     """
     A collection of nodes.
@@ -399,6 +390,7 @@ class Graph:
         self.pos1 = pos1
         self.pos2 = pos2
         self.k = k
+        self.discovered = []
 
     def addEdge(self, node1, node2, reverse, ref):
         """
@@ -574,6 +566,61 @@ class Graph:
         start = pos1 - self.pos1
         end = pos2 - self.pos1 + self.k
         return self.ref[start:end]
+
+    def findVariants(self, best2Comb, bestPathForEachRead, best2AlignmentForEachRead, bestSumCount, variantDict):
+        for c in range(0, len(best2Comb)):
+            for CHROM, POS, ID, REF, ALT, MINCOUNT, FRACFORWARD in self.findPaths([best2Comb[c]]):
+                myVariant = Variant(CHROM, POS, ID, REF, ALT, MINCOUNT,FRACFORWARD)
+                if len(best2Comb) == 2:
+                    FA = len(bestPathForEachRead[c]) / len(best2AlignmentForEachRead)
+                    myVariant.FA = [FA]
+                    AS = sum(best2AlignmentForEachRead) - bestSumCount
+                    myVariant.AS = [AS]
+                else:
+                    FA = -1
+                    myVariant.FA = [FA]
+                    AS = -1
+                    myVariant.AS = [AS]
+                if POS in variantDict:
+                    sameVariant = False
+                    for variant in variantDict[POS]:
+                        if variant.REF == REF and variant.ALT == ALT:
+                            variant.NS = max(MINCOUNT, variant.NS)
+                            variant.NW += 1
+                            sameVariant = True
+                            variant.FA.append(FA)
+                            variant.AS.append(AS)
+                            variant.FF.append(FRACFORWARD)
+                    if sameVariant == False:
+                        variantDict[POS].append(myVariant)
+                else:
+                    variantDict[POS] = [myVariant]
+        return variantDict
+
+    def printVariants(self, variantDict, index=False, debug=False):
+        # print variants with pos smaller than start index
+        for i in sorted(variantDict):
+            if index is False or i < index:
+                for variant in variantDict[i]:
+                    array2print = [variant.CHROM, variant.POS, variant.ID,
+                              variant.REF, variant.ALT, "50", "PASS",
+                              "NS=" + str(variant.NS) + ";FF=" + str(
+                                  sum(variant.FF) / len(variant.FF))
+                              + ";FA=" + str(sum(variant.FA) / len(
+                                  variant.FA)) + ";AS=" + str(
+                                  sum(variant.AS) / len(
+                                      variant.AS)) + ";NW=" + str(variant.NW)]
+
+                    string2print = '\t'.join([str(i) for i in array2print] )
+
+                    if debug:
+                        logging.debug(string2print)
+                    else:
+                        print(string2print)
+                del variantDict[i]
+            else:
+                break
+        return variantDict
 
     def printGraph(self, cutoff=0):
         """
