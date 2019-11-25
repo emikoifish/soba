@@ -1,5 +1,5 @@
 # python3 parser.py -i ../HG002_PacBio_GRCh38.bam -r ../GCA_000001405.15_GRCh38_no_alt_analysis_set.fna  -o test.txt
-# python3 parser.py -i ../HG002.10kb.Sequel.pbmm2.GRCh38.whatshap.haplotag.RTG.10x.trio.bam -r ../GCA_000001405.15_GRCh38_no_alt_analysis_set.fna  -o test.txt 1> teststdin.vcf 2> teststdout.vcf
+# python3 parser.py -i ../HG002.10kb.Sequel.pbmm2.GRCh38.whatshap.haplotag.RTG.10x.trio.bam -r ../GCA_000001405.15_GRCh38_no_alt_analysis_set.fna  -o test.txt 1> teststdout.vcf 2> teststderr.vcf
 
 import argparse
 import sys
@@ -99,16 +99,19 @@ def parseBam(inputBam, inputRef, outputFile):
     # endIndex = startIndex + 30
     # startIndex = 1019800 # no reads are seen
     # endIndex = startIndex + 30
-    startIndex = 2972880
-    endIndex = startIndex + 5000
-
+    # startIndex = 2020500
+    # endIndex = startIndex + 1550
+    # startIndex = 2022000
+    # endIndex = startIndex + 30
     # startIndex = 2000000
-    # endIndex = 3000000
+    # endIndex = 2023000
+
+    startIndex = 2000000
+    endIndex = 3000000
     k = 8
     windowSize = 30
     windowOverlap = 5
 
-    currentPositionVariants = {}
     variantDict = {}
     allVariantsDict = {}
 
@@ -138,6 +141,7 @@ def parseBam(inputBam, inputRef, outputFile):
         reads = samfile.fetch('chr20', largeSegStart, largeSegEnd)
         savedRead = next(reads, None)
 
+
         if savedRead != None:
 
             for interval in range(largeSegStart, largeSegEnd - windowSize + 1, windowOverlap):
@@ -165,7 +169,6 @@ def parseBam(inputBam, inputRef, outputFile):
                     i += 1
                 myGraph.ref = ref
 
-
                 # check if need to add any new cursors
                 while savedRead:
                     read = savedRead
@@ -175,15 +178,14 @@ def parseBam(inputBam, inputRef, outputFile):
                     cursors.append(findStartFromCigar(read, index1))
                     savedRead = next(reads, None)
 
-                removeUpToHere = 0
+                removeIndexes = []
+
                 # update cursors and add seq to graph
-                # print(index1, index2)
                 savedWindowedReads = []
                 for i in range(0, len(cursors)):
                     read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
                     cursors[i] = findStartFromCigar(read, index1, ref=savedRef, seq=savedSeq, tIndex=cigarIndex)
                     read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
-
                     if refPosStart >= index1 and refPosStart <= index2:
                         # get the appropiate sequence
                         r, refPosEnd, t, seqPosEnd = findEndFromCigar(read, savedRef, cigarIndex, savedSeq, index2)
@@ -195,42 +197,42 @@ def parseBam(inputBam, inputRef, outputFile):
                         deBruijn(myGraph, changedk, windowedRead, read.is_reverse)
                     else:
                         # remove from memory
-                        removeUpToHere = i
-                cursors = cursors[removeUpToHere:]
+                        removeIndexes.append(i)
+                for index in removeIndexes[::-1]:
+                    del cursors[index]
                 myGraph.pruneGraph(2)
 
                 # find paths
                 myGraph.performSearch(refNodes[0])
-                # myGraph.printGraph()
+
+                # make sure to add the ref seq if doesn't exist.
+                refPath = -1
+                for i in range(0, len(myGraph.discovered)):
+                    if myGraph.discovered[i] == refNodes:
+                        refPath = i
+                if refPath == -1:
+                    myGraph.discovered.append(refNodes)
+                    refPath = len(myGraph.discovered) - 1
+
+
 
                 alignments = []
                 # which path do you belong to the best?
                 for path in myGraph.discovered:
-                    # print(path)
                     newAlignments = []
                     for read in savedWindowedReads:
                         newAlignments.append(max(i[2] for i in pairwise2.align.globalms(mergeNodes(path), read, 2, -1, -.5, -.1)))
                     alignments.append(newAlignments)
-                    # print(newAlignments)
 
-
-                bestPath = -1
-                bestAvgCount = -1
-                bestSumCount = -1
-                for i in range(0, len(myGraph.discovered)):
-                    if len(alignments[i]):
-                        averageAlign = sum(alignments[i])/len(alignments[i])
-                    else:
-                        averageAlign = 0
-
-                    if averageAlign > bestAvgCount:
-                        bestSumCount = sum(alignments[i])
-                        bestPath = i
-                        bestAvgCount = averageAlign
-                # print(bestPath, bestAvgCount)
-
-
+                # instead of finding the best path, we want to find the reference path.
+                refSumCount = sum(alignments[refPath])
+                outFile.write("position: "+ str(index1) + "\t numPaths" + str(len(myGraph.discovered))+"\n")
                 if len(myGraph.discovered) > 1:
+                    for i in range(0, len(myGraph.discovered)):
+                        if i == refPath:
+                            outFile.write("\t"+mergeNodes(myGraph.discovered[i])+"ref"+"\n")
+                        else:
+                            outFile.write("\t"+mergeNodes(myGraph.discovered[i])+"\n")
                     best2Comb = []
                     best2AvgAlignment = -1
                     best2AlignmentForEachRead = []
@@ -272,23 +274,30 @@ def parseBam(inputBam, inputRef, outputFile):
                         else:
                             comb2.append(best2AlignmentForEachRead[i])
 
-                    outFile.write(str(sum(best2AlignmentForEachRead) - bestSumCount)+ "\n" )
+
 
                     bestPathForEachRead = [comb1, comb2]
 
+                    if refPath in best2Comb:
+                        outFile.write("2\n")
+                    else:
+                        outFile.write("3\n")
+
                     # find the variants and add to currentPositionVariants
-                    variantDict = myGraph.findVariants(best2Comb, bestPathForEachRead, best2AlignmentForEachRead, bestSumCount, variantDict)
+                    variantDict = myGraph.findVariants(best2Comb, bestPathForEachRead, best2AlignmentForEachRead, refSumCount, variantDict)
                     variantDict = myGraph.printVariants(variantDict, index1)
 
-                    allVariantsDict = myGraph.findVariants([i for i in range(0, len(myGraph.discovered))],bestPathForEachRead, best2AlignmentForEachRead,bestSumCount, allVariantsDict)
+                    allVariantsDict = myGraph.findVariants([i for i in range(0, len(myGraph.discovered))],bestPathForEachRead, best2AlignmentForEachRead,refSumCount, allVariantsDict)
                     allVariantsDict = myGraph.printVariants(allVariantsDict, index1, debug=True)
-
+                else:
+                    outFile.write("1\n")
 
 
     # print the rest of the variants that haven't been removed from the list
     # do this at the end or else ordering might be off
     myGraph.printVariants(variantDict)
     myGraph.printVariants(allVariantsDict, debug=True)
+    outFile.write("\n")
     samfile.close()
 
 
@@ -508,19 +517,21 @@ class Graph:
                     ref2Pos = self.nodes[path[endRef-1]].refPos[0]
 
                     #what if ref2 is before ref1? swap ref1 and ref2
+                    swapped = False
                     if ref1Pos > ref2Pos:
                         ref1Pos, ref2Pos = ref2Pos, ref1Pos
+                        swapped = True
 
                     ref = self.findRefFromPos(ref1Pos, ref2Pos)
-                    minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos, ref2Pos)
+                    minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos, ref2Pos, swapped)
                     minCount, maxCount, average, fractionForward = self.nodeStats(path[startRef:endRef])
                     yield (self.chr, minPos, ".", minRef, minSeq, minCount, fractionForward)
 
-    def findMinRepresentation(self, ref, seq, ref1Pos, ref2Pos):
+    def findMinRepresentation(self, ref, seq, ref1Pos, ref2Pos, swapped=False):
         """
         Reduce ref and seq sequences into the minimum representation seen in the vcf.
         """
-        if len(ref) == len(seq): #SNP
+        if len(ref) == len(seq) and swapped is False: #SNP
             return ref[self.k:-self.k], seq[self.k:-self.k], ref1Pos+self.k
         else:
             # thanks: https://www.cureffi.org/2014/04/24/converting-genetic-variants-to-their-minimal-representation/
