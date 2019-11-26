@@ -99,15 +99,15 @@ def parseBam(inputBam, inputRef, outputFile):
     # endIndex = startIndex + 30
     # startIndex = 1019800 # no reads are seen
     # endIndex = startIndex + 30
-    # startIndex = 2020500
-    # endIndex = startIndex + 1550
-    # startIndex = 2022000
-    # endIndex = startIndex + 30
+    startIndex = 2145400
+    endIndex = startIndex + 50
+    # startIndex = 2145400
+    # endIndex = startIndex + 10000
     # startIndex = 2000000
     # endIndex = 2023000
 
-    startIndex = 2000000
-    endIndex = 3000000
+    # startIndex = 2000000
+    # endIndex = 3000000
     k = 8
     windowSize = 30
     windowOverlap = 5
@@ -173,7 +173,7 @@ def parseBam(inputBam, inputRef, outputFile):
                 while savedRead:
                     read = savedRead
                     refPos = read.reference_start
-                    if refPos > index1:
+                    if refPos >= index2:
                         break
                     cursors.append(findStartFromCigar(read, index1))
                     savedRead = next(reads, None)
@@ -186,10 +186,12 @@ def parseBam(inputBam, inputRef, outputFile):
                     read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
                     cursors[i] = findStartFromCigar(read, index1, ref=savedRef, seq=savedSeq, tIndex=cigarIndex)
                     read, refPosStart, cigarIndex, seqPosStart, savedRef, savedSeq = cursors[i]
-                    if refPosStart >= index1 and refPosStart <= index2:
-                        # get the appropiate sequence
-                        r, refPosEnd, t, seqPosEnd = findEndFromCigar(read, savedRef, cigarIndex, savedSeq, index2)
-
+                    # if refPosStart >= index1 and refPosStart <= index2:
+                    # get the appropiate sequence
+                    r, refPosEnd, t, seqPosEnd = findEndFromCigar(read, savedRef, cigarIndex, savedSeq, index2)
+                    # print(seqPosEnd, index2)
+                    # if refPosEnd <= index2 and refPosStart <= index1:
+                    if r.reference_end > index1 and r.reference_start < index2:
                         windowedRead = read.query_alignment_sequence[seqPosStart:seqPosEnd]
                         if len(windowedRead):
                             savedWindowedReads.append(windowedRead)
@@ -200,7 +202,11 @@ def parseBam(inputBam, inputRef, outputFile):
                         removeIndexes.append(i)
                 for index in removeIndexes[::-1]:
                     del cursors[index]
+
+
                 myGraph.pruneGraph(2)
+
+                myGraph.printGraph()
 
                 # find paths
                 myGraph.performSearch(refNodes[0])
@@ -282,6 +288,7 @@ def parseBam(inputBam, inputRef, outputFile):
                         outFile.write("2\n")
                     else:
                         outFile.write("3\n")
+
 
                     # find the variants and add to currentPositionVariants
                     variantDict = myGraph.findVariants(best2Comb, bestPathForEachRead, best2AlignmentForEachRead, refSumCount, variantDict)
@@ -429,28 +436,28 @@ class Graph:
                     del self.nodes[node].out[outNode]
                     del self.nodes[outNode].ins[node]
 
-        # remove all nodes that aren't connected by any edges
-        self.removeNonConnectedNodes()
-
-    def removeNonConnectedNodes(self):
-        """
-        Remove non-ref nodes that don't have ins or outs
-        """
-        numberNodes = len(self.nodes.keys())
-        changed = True
-        while changed:
-            allNodes = list(self.nodes.keys())
-            for node in allNodes:
-                outs = list(self.nodes[node].out.keys())
-                ins = list(self.nodes[node].ins.keys())
-                if len(outs) <= 0 and self.nodes[node].ref is False:
-                    self.removeNode(node)
-                elif len(ins) <= 0 and self.nodes[node].ref is False:
-                    self.removeNode(node)
-            if numberNodes > len(self.nodes.keys()):
-                numberNodes = len(self.nodes.keys())
-            else:
-                changed = False
+    #     # remove all nodes that aren't connected by any edges
+    #     self.removeNonConnectedNodes()
+    #
+    # def removeNonConnectedNodes(self):
+    #     """
+    #     Remove non-ref nodes that don't have ins or outs
+    #     """
+    #     numberNodes = len(self.nodes.keys())
+    #     changed = True
+    #     while changed:
+    #         allNodes = list(self.nodes.keys())
+    #         for node in allNodes:
+    #             outs = list(self.nodes[node].out.keys())
+    #             ins = list(self.nodes[node].ins.keys())
+    #             if len(outs) <= 0 and self.nodes[node].ref is False:
+    #                 self.removeNode(node)
+    #             elif len(ins) <= 0 and self.nodes[node].ref is False:
+    #                 self.removeNode(node)
+    #         if numberNodes > len(self.nodes.keys()):
+    #             numberNodes = len(self.nodes.keys())
+    #         else:
+    #             changed = False
 
     def removeNode(self, nodeName):
         """
@@ -501,9 +508,8 @@ class Graph:
             endRef = len(path)
             for i in range(0, len(path)):
                 if self.nodes[path[i]].ref:
-                    if switch and endRef > i:
+                    if switch and endRef > i: #works if there is a nonref node. TODO fix if ref to ref
                         endRef = i + 1
-
                     elif not switch and startRef < i:
                         startRef = i
                 else:
@@ -531,19 +537,19 @@ class Graph:
         """
         Reduce ref and seq sequences into the minimum representation seen in the vcf.
         """
-        if len(ref) == len(seq) and swapped is False: #SNP
-            return ref[self.k:-self.k], seq[self.k:-self.k], ref1Pos+self.k
-        else:
-            # thanks: https://www.cureffi.org/2014/04/24/converting-genetic-variants-to-their-minimal-representation/
-            while (min(len(seq), len(ref)) > 1 and seq[-1] == ref[-1]):
-                seq = seq[:-1]
-                ref = ref[:-1]
-                # strip off identical prefixes and increment position
-            while (min(len(seq), len(ref)) > 1 and seq[0] == ref[0]):
-                seq = seq[1:]
-                ref = ref[1:]
-                ref1Pos += 1
-            return ref, seq, ref1Pos
+        # if len(ref) == len(seq) and swapped is False: #SNP
+        #     return ref[self.k:-self.k], seq[self.k:-self.k], ref1Pos+self.k
+        # else:
+        # thanks: https://www.cureffi.org/2014/04/24/converting-genetic-variants-to-their-minimal-representation/
+        while (min(len(seq), len(ref)) > 1 and seq[-1] == ref[-1]):
+            seq = seq[:-1]
+            ref = ref[:-1]
+            # strip off identical prefixes and increment position
+        while (min(len(seq), len(ref)) > 1 and seq[0] == ref[0]):
+            seq = seq[1:]
+            ref = ref[1:]
+            ref1Pos += 1
+        return ref, seq, ref1Pos
 
     def findCandidateStarts(self):
         """
