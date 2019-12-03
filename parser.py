@@ -10,6 +10,8 @@ from pyfasta import Fasta
 from Bio import pairwise2
 from itertools import combinations
 from scipy import stats
+from collections import defaultdict
+
 import logging
 logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 
@@ -100,7 +102,7 @@ def parseBam(inputBam, inputRef, outputFile):
     # startIndex = 1019800 # no reads are seen
     # endIndex = startIndex + 30
     startIndex = 2145400
-    endIndex = startIndex + 50
+    endIndex = startIndex + 30
     # startIndex = 2145400
     # endIndex = startIndex + 10000
     # startIndex = 2000000
@@ -155,20 +157,17 @@ def parseBam(inputBam, inputRef, outputFile):
 
                 changedk = k
                 i = index1
-                refNodes = deBruijn(myGraph, changedk, ref, ref=True)
-                while refNodes == False and changedk <= 15:
-                    changedk += 1
-                    myGraph = Graph(chr + "_" + str(index1) + "_" + str(index2), chr, index1, index2, changedk)
-                    refNodes = deBruijn(myGraph, changedk, ref, ref=True)
-                if refNodes == False:
-                    refNodes = deBruijn(myGraph, changedk, ref, ref=True, final=True)
+                refNodes = refdeBruijn(myGraph, changedk, ref, index1, ref=True)
+                # while refNodes == False and changedk <= 15:
+                #     changedk += 1
+                #     myGraph = Graph(chr + "_" + str(index1) + "_" + str(index2), chr, index1, index2, changedk)
+                #     refNodes = deBruijn(myGraph, changedk, ref, ref=True)
+                # if refNodes == False:
+                #     refNodes = deBruijn(myGraph, changedk, ref, ref=True, final=True)
 
-                for node in refNodes:
-                    myGraph.nodes[node].ref = True
-                    myGraph.nodes[node].addRefPos(i)
-                    i += 1
                 myGraph.ref = ref
 
+                print(myGraph.nodes)
                 # check if need to add any new cursors
                 while savedRead:
                     read = savedRead
@@ -203,10 +202,12 @@ def parseBam(inputBam, inputRef, outputFile):
                 for index in removeIndexes[::-1]:
                     del cursors[index]
 
-
+                print(myGraph.nodes)
                 myGraph.pruneGraph(2)
+                print(myGraph.nodes)
 
                 myGraph.printGraph()
+                myGraph.topologicalOrder()
 
                 # find paths
                 myGraph.performSearch(refNodes[0])
@@ -220,7 +221,7 @@ def parseBam(inputBam, inputRef, outputFile):
                     myGraph.discovered.append(refNodes)
                     refPath = len(myGraph.discovered) - 1
 
-
+                myGraph.refPath = refPath
 
                 alignments = []
                 # which path do you belong to the best?
@@ -328,6 +329,19 @@ def findClosestIndex(refPos, index, lessThan=True):
         i += 1
     return -1
 
+
+class NodeSets:
+    """
+    Holds Nodes of the same name)
+    """
+    def __init__(self, name):
+        self.name = name
+        self.internalNodes = []
+
+    def addNode(self, node):
+        self.internalNodes.append(node)
+
+
 class Node:
     """
     Create nodes in a graph and store them in a dictionary.
@@ -337,16 +351,15 @@ class Node:
         self.ins - edges going in
         self.name - name of node
     """
-    def __init__(self, name, ref=False, merged=False, mergedCounts=[]):
+    def __init__(self, name, ref=False):
         """Store the node attributes and add node to dictionary of nodes."""
         self.out = {}
         self.ins = {}
         self.name = name
         self.ref = ref
-        self.visited = False
         self.refPos = []
-        self.merged = merged
-        self.mergedCounts = mergedCounts
+        self.visited = False
+        self.inDegree = 0
 
     def addIn(self, newIn, reverse, ref):
         """Add a new in to node."""
@@ -399,7 +412,7 @@ class Graph:
     """
     def __init__(self, name, chr, pos1, pos2, k):
         self.name = name
-        self.nodes = {}
+        self.nodes = defaultdict(list)
         self.totalEdges = 0
         self.ref = ""
         self.chr = chr
@@ -407,34 +420,92 @@ class Graph:
         self.pos2 = pos2
         self.k = k
         self.discovered = []
+        self.refPath = ""
 
     def addEdge(self, node1, node2, reverse, ref):
         """
         Add an edge from node1 to node2
         """
+        check = True
         if node1 not in self.nodes:
-            self.nodes[node1] = Node(node1)
+            self.nodes[node1].append(Node(node1))
+            check = False
         if node2 not in self.nodes:
-            self.nodes[node2] = Node(node2)
-        self.nodes[node1].addOut(node2, reverse, ref)
-        self.nodes[node2].addIn(node1, reverse, ref)
+            self.nodes[node2].append(Node(node2))
+            check = False
+
+        if len(self.nodes[node1]) == 1 and len(self.nodes[node2]) == 1:
+            self.nodes[node1][0].addOut(self.nodes[node2][0], reverse, ref)
+            self.nodes[node2][0].addIn(self.nodes[node1][0], reverse, ref)
+        # if check:
+        #     if self.topologicalOrder() == False:
+        #         # remove nodes
+        #         # create a new Node - create a new Node class?
+        #         # or add to Node if at correct position
+
+
+    def refAddEdge(self, strRep1, strRep2, node1, node2, reverse, ref):
+        if strRep1 not in self.nodes:
+            self.nodes[strRep1].append(node1)
+
+        if strRep2 not in self.nodes:
+            self.nodes[strRep2].append(node2)
+
+        node1.addOut(node2, reverse, ref)
+        node2.addIn(node1, reverse, ref)
+
+
+
+
+    def topologicalOrder(self):
+        self.cleanNodes()
+
+        queue = []
+
+        numberNodes = 0
+        for node in self.nodes.values():
+            for n in node:
+                numberNodes += 1
+                n.inDegree = len(n.ins)
+                if len(n.ins) == 0:
+                    queue.append(n)
+
+        topOrder = []
+        while queue:
+            u = queue.pop()
+            topOrder.append(u)
+
+            for out in u.out:
+                out.inDegree -= 1
+                # If in-degree becomes zero, add it to queue
+                if out.inDegree == 0:
+                    queue.append(out)
+
+        if len(topOrder) != numberNodes:
+            return False
+        else:
+            return True
+
+
+
+
+
 
     def pruneGraph(self, minWeight):
         """
         Remove all edges with weight less than minWeight
         """
         allNodes = list(self.nodes.keys())
-        for node in allNodes:
-
-            #check all outs of this node
-            outs = list(self.nodes[node].out.keys())
-            for outNode in outs:
-                # don't remove any ref nodes
-                if self.nodes[node].ref and self.nodes[outNode].ref:
-                    continue
-                elif sum(self.nodes[node].out[outNode]) < minWeight:
-                    del self.nodes[node].out[outNode]
-                    del self.nodes[outNode].ins[node]
+        for bunch in allNodes:
+            for node in list(self.nodes[bunch]):
+                #check all outs of this node
+                outs = list(node.out.keys())
+                for outNode in outs:
+                    if node.ref and outNode.ref:
+                        continue
+                    elif sum(node.out[outNode]) < minWeight:
+                        del node.out[outNode]
+                        del outNode.ins[node]
 
     #     # remove all nodes that aren't connected by any edges
     #     self.removeNonConnectedNodes()
@@ -475,15 +546,16 @@ class Graph:
         dfs helper function, sets all nodes to unvisited state
         """
         for node in self.nodes.values():
-            node.visited = False
+            for n in node:
+                n.visited = False
 
     def search(self, node, discovered):
         discovered.append(node)
 
-        if not self.nodes[node].out.keys():  # no keys
+        if not node.out.keys():  # no keys
             self.discovered.append(discovered)
 
-        for nextNode in self.nodes[node].out.keys():
+        for nextNode in node.out.keys():
             if nextNode not in discovered:
                 self.search(nextNode, discovered.copy())
             else: # broke cycle, so add this path
@@ -500,14 +572,12 @@ class Graph:
                 chosenPaths.append(self.discovered[p])
         else:
             chosenPaths = self.discovered
-
-
         for path in chosenPaths:
             startRef = 0
             switch = False
             endRef = len(path)
             for i in range(0, len(path)):
-                if self.nodes[path[i]].ref:
+                if path[i].ref:
                     if switch and endRef > i: #works if there is a nonref node. TODO fix if ref to ref
                         endRef = i + 1
                     elif not switch and startRef < i:
@@ -517,10 +587,10 @@ class Graph:
             if switch:
                 seq = mergeNodes(path[startRef:endRef])
                 # should always start on ref
-                ref1Pos = self.nodes[path[startRef]].refPos[0]
+                ref1Pos = path[startRef].refPos[0]
                 # what if don't end on ref? Ignore path.
-                if self.nodes[path[endRef-1]].ref:
-                    ref2Pos = self.nodes[path[endRef-1]].refPos[0]
+                if path[endRef-1].ref:
+                    ref2Pos = path[endRef-1].refPos[0]
 
                     #what if ref2 is before ref1? swap ref1 and ref2
                     swapped = False
@@ -532,6 +602,38 @@ class Graph:
                     minRef, minSeq, minPos = self.findMinRepresentation(ref, seq, ref1Pos, ref2Pos, swapped)
                     minCount, maxCount, average, fractionForward = self.nodeStats(path[startRef:endRef])
                     yield (self.chr, minPos, ".", minRef, minSeq, minCount, fractionForward)
+
+    # def findPaths(self, selectedPaths=False):
+    #     if selectedPaths == False:
+    #         selectedPaths == [i for i in range(0, len(self.discovered))]
+    #
+    #     for i in range(0, len(self.discovered)):
+    #         if i in selectedPaths:
+    #             yield self.compare(self.discovered[i], self.discovered[self.refPath])
+    #
+    #
+    # def compare(self, path1, path2):
+    #     print('eh')
+    #     if self.nodes[path1[0]].ref:
+    #         minRef, minSeq, minPos = self.findMinRepresentation(path1, path2, self.nodes[path1[0]].refPos[0])
+    #     elif self.nodes[path1[-1]].ref:
+    #         minRef, minSeq, minPos = self.findMinRepresentation(path1, path2, self.nodes[path1[0]].refPos[-1], True)
+    #     else:
+    #         for p in range(0, len(path1)):
+    #             if self.nodes[path1[p]].ref:
+    #                 for r in range(0, len(path2)):
+    #                     if path2[r] == path1[p]:
+    #                         minRef, minSeq, minPos = self.findMinRepresentation(path1[:p], path2[:r], self.nodes[self.discovered[0]].refPos[-1], True)
+    #                         if len(minSeq) == 0:
+    #                             minRef, minSeq, minPos = self.findMinRepresentation(path1[p:], path2[r:], self.nodes[self.discovered[0]].refPos[-1])
+
+        # minCount, maxCount, average, fractionForward = self.nodeStats(path2[startRef:endRef])
+        # yield (self.chr, minPos, ".", minRef, minSeq, minCount, fractionForward)
+
+        # yield (self.chr, minPos, ".", minRef, minSeq, 1, 1)
+
+
+
 
     def findMinRepresentation(self, ref, seq, ref1Pos, ref2Pos, swapped=False):
         """
@@ -646,18 +748,20 @@ class Graph:
         """
         dot = Digraph(comment=self.name, engine="dot")
         for key, value in self.nodes.items():
-            if value.ref:
-                dot.node(key, key +"\n"+str(value.refPos), style='filled', fillcolor="#E1ECF4")
-            else:
-                for node, count in value.out.items():
-                    if sum(count) > cutoff:
-                        dot.node(key, key)
+            for n in value:
+                if n.ref:
+                    dot.node(key, key +"\n"+str(n.refPos), style='filled', fillcolor="#E1ECF4")
+                else:
+                    for node, count in n.out.items():
+                        if sum(count) > cutoff:
+                            dot.node(key, key)
         for key, value in self.nodes.items():
-            for node, count in value.out.items():
-                if self.nodes[key].ref and self.nodes[node].ref:
-                    dot.edge(key, node, xlabel=str(count))
-                elif sum(count) > cutoff:
-                    dot.edge(key, node, xlabel=str(count))
+            for n in value:
+                for node, count in n.out.items():
+                    if n.ref and node.ref: #TODO change this so that can actually reference the correct node
+                        dot.edge(key, node.name, xlabel=str(count))
+                    elif sum(count) > cutoff:
+                        dot.edge(key, node.name, xlabel=str(count))
         # print(dot.source)
         dot.render('test-output/' + self.name, view=True)
 
@@ -674,16 +778,34 @@ def deBruijn(graph, k, text, reverse=True, ref=False, final=False):
             if node1 in graph.nodes and node2 in graph.nodes:
                 return False
         graph.addEdge(node1, node2, reverse, ref)
+
         nodes.append(node2)
+    return nodes
+
+def refdeBruijn(graph, k, text, firstPos, reverse=True, ref=False):
+    """
+    Construct a deBruijn graph from a string.
+    """
+    pos = firstPos
+    myNode = Node(text[0:0 + k], ref=True)
+    myNode.addRefPos(pos)
+    nodes = [myNode]
+    for i in range(1, len(text) - k+1):
+        pos += 1
+        strRep = text[i:i + k]
+        myNode = Node(strRep, ref=True)
+        myNode.addRefPos(pos)
+        graph.refAddEdge(nodes[-1].name, strRep, nodes[-1], myNode, reverse, ref)
+        nodes.append(myNode)
     return nodes
 
 def mergeNodes(kmers):
     """
     Create the string formed by kmers. Kmers in correct order.
     """
-    text = kmers[0]
+    text = kmers[0].name
     for i in range(1, len(kmers)):
-        text = text + kmers[i][-1]
+        text = text + kmers[i].name[-1]
     return text
 
 def argParser():
