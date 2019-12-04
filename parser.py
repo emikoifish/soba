@@ -101,7 +101,9 @@ def parseBam(inputBam, inputRef, outputFile):
     # endIndex = startIndex + 30
     # startIndex = 1019800 # no reads are seen
     # endIndex = startIndex + 30
-    startIndex = 2145400
+    # startIndex = 2092640 #short repeat
+    # endIndex = startIndex + 30
+    startIndex = 2145400 #long repeat
     endIndex = startIndex + 30
     # startIndex = 2145400
     # endIndex = startIndex + 10000
@@ -157,7 +159,7 @@ def parseBam(inputBam, inputRef, outputFile):
 
                 changedk = k
                 i = index1
-                refNodes = refdeBruijn(myGraph, changedk, ref, index1, ref=True)
+                refNodes = deBruijn(myGraph, changedk, ref, firstPos=index1, ref=True)
                 # while refNodes == False and changedk <= 15:
                 #     changedk += 1
                 #     myGraph = Graph(chr + "_" + str(index1) + "_" + str(index2), chr, index1, index2, changedk)
@@ -167,7 +169,6 @@ def parseBam(inputBam, inputRef, outputFile):
 
                 myGraph.ref = ref
 
-                print(myGraph.nodes)
                 # check if need to add any new cursors
                 while savedRead:
                     read = savedRead
@@ -178,7 +179,7 @@ def parseBam(inputBam, inputRef, outputFile):
                     savedRead = next(reads, None)
 
                 removeIndexes = []
-
+                print(ref)
                 # update cursors and add seq to graph
                 savedWindowedReads = []
                 for i in range(0, len(cursors)):
@@ -194,17 +195,16 @@ def parseBam(inputBam, inputRef, outputFile):
                         windowedRead = read.query_alignment_sequence[seqPosStart:seqPosEnd]
                         if len(windowedRead):
                             savedWindowedReads.append(windowedRead)
-                        # print(refPosStart, refPosEnd, windowedRead)
-                        deBruijn(myGraph, changedk, windowedRead, read.is_reverse)
+                        print(windowedRead)
+                        deBruijn(myGraph, changedk, windowedRead, reverse=read.is_reverse)
+
                     else:
                         # remove from memory
                         removeIndexes.append(i)
                 for index in removeIndexes[::-1]:
                     del cursors[index]
 
-                print(myGraph.nodes)
                 myGraph.pruneGraph(2)
-                print(myGraph.nodes)
 
                 myGraph.printGraph()
                 myGraph.topologicalOrder()
@@ -308,8 +308,6 @@ def parseBam(inputBam, inputRef, outputFile):
     outFile.write("\n")
     samfile.close()
 
-
-
 def findClosestIndex(refPos, index, lessThan=True):
     """
     Search through the refPos list to find the closest position to index
@@ -330,18 +328,6 @@ def findClosestIndex(refPos, index, lessThan=True):
     return -1
 
 
-class NodeSets:
-    """
-    Holds Nodes of the same name)
-    """
-    def __init__(self, name):
-        self.name = name
-        self.internalNodes = []
-
-    def addNode(self, node):
-        self.internalNodes.append(node)
-
-
 class Node:
     """
     Create nodes in a graph and store them in a dictionary.
@@ -360,6 +346,7 @@ class Node:
         self.refPos = []
         self.visited = False
         self.inDegree = 0
+        self.readPos = []
 
     def addIn(self, newIn, reverse, ref):
         """Add a new in to node."""
@@ -383,11 +370,35 @@ class Node:
             self.out[newOut] = [0, 0]
             self.out[newOut][reverse] += addCount
 
+    def removeOut(self, toRemoveOut, reverse, ref):
+        addCount = -1
+        if ref:
+            addCount = 0
+        if toRemoveOut in self.out:
+            self.out[toRemoveOut][reverse] += addCount
+        if self.out[toRemoveOut] == [0, 0]:
+            del toRemoveOut
+
+    def removeIn(self, toRemoveIn, reverse, ref):
+        addCount = -1
+        if ref:
+            addCount = 0
+        if toRemoveIn in self.out:
+            self.ins[toRemoveIn][reverse] += addCount
+        if self.ins[toRemoveIn] == [0, 0]:
+            del toRemoveIn
+
     def addRefPos(self, pos):
         """
         Add a reference pos to a ref node
         """
         self.refPos.append(pos)
+
+    def addReadPos(self, pos):
+        """
+        Add a read pos to a node
+        """
+        self.readPos.append(pos)
 
 class Variant:
     """
@@ -422,21 +433,18 @@ class Graph:
         self.discovered = []
         self.refPath = ""
 
-    def addEdge(self, node1, node2, reverse, ref):
+    def addEdge(self, strRep1, strRep2, node1, node2, reverse, ref):
         """
         Add an edge from node1 to node2
         """
-        check = True
-        if node1 not in self.nodes:
-            self.nodes[node1].append(Node(node1))
-            check = False
-        if node2 not in self.nodes:
-            self.nodes[node2].append(Node(node2))
-            check = False
+        if strRep1 not in self.nodes:
+            self.nodes[strRep1].append(node1)
+        if strRep2 not in self.nodes:
+            self.nodes[strRep2].append(node2)
 
-        if len(self.nodes[node1]) == 1 and len(self.nodes[node2]) == 1:
-            self.nodes[node1][0].addOut(self.nodes[node2][0], reverse, ref)
-            self.nodes[node2][0].addIn(self.nodes[node1][0], reverse, ref)
+        if len(self.nodes[strRep1]) == 1 and len(self.nodes[strRep2]) == 1:
+            self.nodes[strRep1][0].addOut(self.nodes[strRep2][0], reverse, ref)
+            self.nodes[strRep2][0].addIn(self.nodes[strRep1][0], reverse, ref)
         # if check:
         #     if self.topologicalOrder() == False:
         #         # remove nodes
@@ -444,17 +452,69 @@ class Graph:
         #         # or add to Node if at correct position
 
 
-    def refAddEdge(self, strRep1, strRep2, node1, node2, reverse, ref):
-        if strRep1 not in self.nodes:
+    def refAddEdge(self, strRep1, strRep2, node1, node2, reverse, ref, pos):
+        if node1 not in self.nodes[strRep1]:
             self.nodes[strRep1].append(node1)
-
-        if strRep2 not in self.nodes:
+        if node2 not in self.nodes[strRep2]:
             self.nodes[strRep2].append(node2)
 
         node1.addOut(node2, reverse, ref)
         node2.addIn(node1, reverse, ref)
-
-
+        node1.addReadPos(pos)
+        node2.addReadPos(pos+1)
+        # else:
+        #     check = True
+        #     if strRep1 not in self.nodes:
+        #         check = False
+        #         if node1 not in self.nodes[strRep1]:
+        #             self.nodes[strRep1].append(node1)
+        #     if strRep2 not in self.nodes:
+        #         check = False
+        #         if node2 not in self.nodes[strRep2]:
+        #             self.nodes[strRep2].append(node2)
+        #
+        #     if check == False:
+        #         node1.addOut(node2, reverse, ref)
+        #         node2.addIn(node1, reverse, ref)
+        #         node1.addReadPos(pos)
+        #         node2.addReadPos(pos + 1)
+        #     else:
+        #
+        #
+        #
+        #         if len(self.nodes[strRep1]) == 1 and len(self.nodes[strRep2]) == 1:
+        #             self.nodes[strRep1][0].addOut(self.nodes[strRep2][0], reverse, ref)
+        #             self.nodes[strRep2][0].addIn(self.nodes[strRep1][0], reverse, ref)
+        #             if self.topologicalOrder() == False:
+        #                 self.nodes[strRep1][0].removeOut(self.nodes[strRep2][0], reverse, ref)
+        #                 self.nodes[strRep2][0].removeIn(self.nodes[strRep1][0],reverse, ref)
+        #                 self.nodes[strRep2].append(node2)
+        #                 self.nodes[strRep1][0].addOut(node2, reverse, ref)
+        #                 node2.addIn(self.nodes[strRep1][0], reverse, ref)
+        #
+        #                 self.nodes[strRep1][0].addReadPos(pos)
+        #                 node2.addReadPos(pos + 1)
+        #                 # if self.topologicalOrder() == False:
+        #                 #     self.nodes[strRep1][0].removeOut(node2, reverse, ref)
+        #                 #     node2.removeIn(self.nodes[strRep1][0], reverse, ref)
+        #                 #     node1.addOut(self.nodes[strRep2][0], reverse, ref)
+        #                 #     self.nodes[strRep2][0].addIn(node1, reverse, ref)
+        #                 # print(strRep1, strRep2)
+        #             else:
+        #                 self.nodes[strRep1][0].addReadPos(pos)
+        #                 self.nodes[strRep2][0].addReadPos(pos + 1)
+        #         else:
+        #             possibleCandidates = []
+        #             for i in self.nodes[strRep1]:
+        #                 for j in self.nodes[strRep2]:
+        #                     if i in j.ins:
+        #                         possibleCandidates.append([i,j])
+        #             if len(possibleCandidates) == 1:
+        #                 possibleCandidates[0][0].addOut(self.nodes[strRep2][0], reverse, ref)
+        #                 possibleCandidates[0][1].addIn(self.nodes[strRep1][0],reverse, ref)
+        #             else:
+        #                 "uhhhadsfjlsd"
+        #
 
 
     def topologicalOrder(self):
@@ -506,6 +566,14 @@ class Graph:
                     elif sum(node.out[outNode]) < minWeight:
                         del node.out[outNode]
                         del outNode.ins[node]
+
+        for bunch in allNodes:
+            for node in list(self.nodes[bunch]):
+                if len(node.out.keys()) == 0 and len(node.ins.keys()) == 0:
+                    self.nodes[bunch].remove(node)
+            if len(self.nodes[bunch]) == 0:
+                del self.nodes[bunch]
+
 
     #     # remove all nodes that aren't connected by any edges
     #     self.removeNonConnectedNodes()
@@ -670,8 +738,8 @@ class Graph:
         counts = []
         numberForward = 0
         for i in range(1, len(kmers)):
-            counts.append(sum(self.nodes[kmers[i-1]].out[kmers[i]]))
-            numberForward += self.nodes[kmers[i-1]].out[kmers[i]][0]
+            counts.append(sum(kmers[i-1].out[kmers[i]]))
+            numberForward += kmers[i-1].out[kmers[i]][0]
         minCount = min(counts)
         maxCount = max(counts)
         average = sum(counts)/len(counts)
@@ -747,55 +815,59 @@ class Graph:
         Can set a cutoff larger than pruning, but computations are run on pruned graph
         """
         dot = Digraph(comment=self.name, engine="dot")
+        dot.attr(rankdir='LR') #draw from Left to Right
         for key, value in self.nodes.items():
             for n in value:
                 if n.ref:
-                    dot.node(key, key +"\n"+str(n.refPos), style='filled', fillcolor="#E1ECF4")
+                    dot.node(str(n), key +"\n"+str(n.refPos), style='filled', fillcolor="#E1ECF4")
                 else:
-                    for node, count in n.out.items():
-                        if sum(count) > cutoff:
-                            dot.node(key, key)
+                    dot.node(str(n), key)
+                for node, count in n.out.items():
+                    if sum(count) > cutoff:
+                        dot.node(str(node), key)
         for key, value in self.nodes.items():
             for n in value:
                 for node, count in n.out.items():
                     if n.ref and node.ref: #TODO change this so that can actually reference the correct node
-                        dot.edge(key, node.name, xlabel=str(count))
+                        dot.edge(str(n), str(node), xlabel=str(count))
                     elif sum(count) > cutoff:
-                        dot.edge(key, node.name, xlabel=str(count))
+                        dot.edge(str(n), str(node), xlabel=str(count))
         # print(dot.source)
         dot.render('test-output/' + self.name, view=True)
 
 
-def deBruijn(graph, k, text, reverse=True, ref=False, final=False):
+# def deBruijn(graph, k, text, reverse=True, ref=False, final=False):
+#     """
+#     Construct a deBruijn graph from a string.
+#     """
+#     nodes = [text[0:0 + k]]
+#     for i in range(0, len(text) - k):
+#         node1 = text[i:i + k]
+#         node2 = text[i + 1:i + k + 1]
+#         if ref and final is False:
+#             if node1 in graph.nodes and node2 in graph.nodes:
+#                 return False
+#         graph.addEdge(node1, node2, reverse, ref)
+#
+#         nodes.append(node2)
+#     return nodes
+
+def deBruijn(graph, k, text, firstPos=0, reverse=True, ref=False):
     """
     Construct a deBruijn graph from a string.
     """
-    nodes = [text[0:0 + k]]
-    for i in range(0, len(text) - k):
-        node1 = text[i:i + k]
-        node2 = text[i + 1:i + k + 1]
-        if ref and final is False:
-            if node1 in graph.nodes and node2 in graph.nodes:
-                return False
-        graph.addEdge(node1, node2, reverse, ref)
-
-        nodes.append(node2)
-    return nodes
-
-def refdeBruijn(graph, k, text, firstPos, reverse=True, ref=False):
-    """
-    Construct a deBruijn graph from a string.
-    """
-    pos = firstPos
-    myNode = Node(text[0:0 + k], ref=True)
-    myNode.addRefPos(pos)
+    pos = 0
+    myNode = Node(text[0:0 + k], ref)
+    if ref:
+        myNode.addRefPos(pos + firstPos)
     nodes = [myNode]
     for i in range(1, len(text) - k+1):
-        pos += 1
         strRep = text[i:i + k]
-        myNode = Node(strRep, ref=True)
-        myNode.addRefPos(pos)
-        graph.refAddEdge(nodes[-1].name, strRep, nodes[-1], myNode, reverse, ref)
+        myNode = Node(strRep, ref)
+        if ref:
+            pos += 1
+            myNode.addRefPos(pos + firstPos)
+        graph.addEdge(nodes[-1].name, strRep,nodes[-1], myNode, reverse, ref)
         nodes.append(myNode)
     return nodes
 
