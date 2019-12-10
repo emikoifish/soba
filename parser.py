@@ -11,6 +11,7 @@ from Bio import pairwise2
 from itertools import combinations
 from scipy import stats
 from collections import defaultdict
+import copy
 
 import logging
 logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
@@ -179,7 +180,7 @@ def parseBam(inputBam, inputRef, outputFile):
                     savedRead = next(reads, None)
 
                 removeIndexes = []
-                print(ref)
+
                 # update cursors and add seq to graph
                 savedWindowedReads = []
                 for i in range(0, len(cursors)):
@@ -195,7 +196,7 @@ def parseBam(inputBam, inputRef, outputFile):
                         windowedRead = read.query_alignment_sequence[seqPosStart:seqPosEnd]
                         if len(windowedRead):
                             savedWindowedReads.append(windowedRead)
-                        print(windowedRead)
+                        # print(windowedRead)
                         deBruijn(myGraph, changedk, windowedRead, reverse=read.is_reverse)
 
                     else:
@@ -205,12 +206,14 @@ def parseBam(inputBam, inputRef, outputFile):
                     del cursors[index]
 
                 myGraph.pruneGraph(2)
+                myGraph.multiplicity(savedWindowedReads)
 
                 myGraph.printGraph()
-                myGraph.topologicalOrder()
 
                 # find paths
                 myGraph.performSearch(refNodes[0])
+
+
 
                 # make sure to add the ref seq if doesn't exist.
                 refPath = -1
@@ -224,12 +227,22 @@ def parseBam(inputBam, inputRef, outputFile):
                 myGraph.refPath = refPath
 
                 alignments = []
+                variants4eachPath = []
                 # which path do you belong to the best?
                 for path in myGraph.discovered:
                     newAlignments = []
+
                     for read in savedWindowedReads:
                         newAlignments.append(max(i[2] for i in pairwise2.align.globalms(mergeNodes(path), read, 2, -1, -.5, -.1)))
+                        # print(pairwise2.align.globalms(mergeNodes(path), read, 2, -1, -.5, -.1))
                     alignments.append(newAlignments)
+
+                    variant4path = {}
+                    for i in pairwise2.align.globalms(ref, mergeNodes(path), 2, -1, -.5, -.1):
+                        for REF, ALT, POS, PATH in findDifference(i[0], i[1], index1, path):
+                            if len(PATH) > 1:
+                                variant4path = myGraph.storeVariants(POS, REF, ALT, PATH, variant4path)
+                    variants4eachPath.append(variant4path)
 
                 # instead of finding the best path, we want to find the reference path.
                 refSumCount = sum(alignments[refPath])
@@ -292,10 +305,10 @@ def parseBam(inputBam, inputRef, outputFile):
 
 
                     # find the variants and add to currentPositionVariants
-                    variantDict = myGraph.findVariants(best2Comb, bestPathForEachRead, best2AlignmentForEachRead, refSumCount, variantDict)
+                    variantDict = myGraph.findVariants(best2Comb, bestPathForEachRead, best2AlignmentForEachRead, refSumCount, variantDict, variants4eachPath)
                     variantDict = myGraph.printVariants(variantDict, index1)
 
-                    allVariantsDict = myGraph.findVariants([i for i in range(0, len(myGraph.discovered))],bestPathForEachRead, best2AlignmentForEachRead,refSumCount, allVariantsDict)
+                    allVariantsDict = myGraph.findVariants([i for i in range(0, len(myGraph.discovered))],bestPathForEachRead, best2AlignmentForEachRead,refSumCount, allVariantsDict, variants4eachPath)
                     allVariantsDict = myGraph.printVariants(allVariantsDict, index1, debug=True)
                 else:
                     outFile.write("1\n")
@@ -347,6 +360,7 @@ class Node:
         self.visited = False
         self.inDegree = 0
         self.readPos = []
+        self.refMultiplicity = 0
 
     def addIn(self, newIn, reverse, ref):
         """Add a new in to node."""
@@ -392,7 +406,8 @@ class Node:
         """
         Add a reference pos to a ref node
         """
-        self.refPos.append(pos)
+        if pos not in self.refPos:
+            self.refPos.append(pos)
 
     def addReadPos(self, pos):
         """
@@ -439,8 +454,12 @@ class Graph:
         """
         if strRep1 not in self.nodes:
             self.nodes[strRep1].append(node1)
+        elif ref:
+            self.nodes[strRep1][0].addRefPos(node1.refPos[0])
         if strRep2 not in self.nodes:
             self.nodes[strRep2].append(node2)
+        elif ref:
+            self.nodes[strRep2][0].addRefPos(node2.refPos[0])
 
         if len(self.nodes[strRep1]) == 1 and len(self.nodes[strRep2]) == 1:
             self.nodes[strRep1][0].addOut(self.nodes[strRep2][0], reverse, ref)
@@ -617,21 +636,57 @@ class Graph:
             for n in node:
                 n.visited = False
 
-    def search(self, node, discovered):
-        discovered.append(node)
+    # def search(self, node, discovered):
+    #     discovered.append(node)
+    #
+    #     if not node.out.keys():  # no keys
+    #         self.discovered.append(discovered)
+    #
+    #     for nextNode in node.out.keys():
+    #         if nextNode not in discovered:
+    #             self.search(nextNode, discovered.copy())
+    #         else: # broke cycle, so add this path
+    #             self.discovered.append(discovered)
+
+    def search(self, node, discovered, pos):
+
+        discovered[node].append(pos)
 
         if not node.out.keys():  # no keys
-            self.discovered.append(discovered)
+            if self.minMultiplicity(discovered):
+                orderedDiscovered = [0]*(pos+1)
+                for key,value in discovered.items():
+                    for v in value:
+                        orderedDiscovered[v] = key
+                self.discovered.append(orderedDiscovered)
 
         for nextNode in node.out.keys():
-            if nextNode not in discovered:
-                self.search(nextNode, discovered.copy())
+            if len(discovered[nextNode]) < nextNode.multiplicity[1]:
+                copied = defaultdict(list)
+                for key, valuelist in discovered.items():
+                    copied[key] = valuelist.copy()
+                self.search(nextNode, copied, pos + 1)
             else: # broke cycle, so add this path
-                self.discovered.append(discovered)
+                if self.minMultiplicity(discovered):
+                    orderedDiscovered = [0] * (pos+1)
+                    for key, value in discovered.items():
+                        for v in value:
+                            orderedDiscovered[v] = key
+                    self.discovered.append(orderedDiscovered)
+
+
+    def minMultiplicity(self, kmers):
+        for key, value in self.nodes.items():
+            for v in value:
+                if len(kmers[v]) >= v.multiplicity[0] and len(kmers[v]) <= v.multiplicity[1]:
+                    continue
+                else:
+                    return False
+        return True
 
     def performSearch(self, startingNode):
         self.discovered = []
-        self.search(startingNode, [])
+        self.search(startingNode, defaultdict(list), 0)
 
     def findPaths(self, selectedPaths=False):
         chosenPaths = []
@@ -644,15 +699,35 @@ class Graph:
             startRef = 0
             switch = False
             endRef = len(path)
+            lastRef = 0
+            switchRef = False
             for i in range(0, len(path)):
+                # print(i, path[i].name)
                 if path[i].ref:
-                    if switch and endRef > i: #works if there is a nonref node. TODO fix if ref to ref
-                        endRef = i + 1
-                    elif not switch and startRef < i:
-                        startRef = i
-                else:
-                    switch = True
-            if switch:
+                    if lastRef != 0 or path[i-1].ref is not True:
+                        if lastRef + 1 in path[i].refPos:
+                            lastRef += 1
+                            if switchRef and endRef > i:
+                                endRef = i + 1
+                        else:
+                            if switchRef == False:
+                                switchRef = True
+                                startRef = i
+                            else:
+                                lastRef += 1
+
+                    else:
+                        lastRef = path[i].refPos[0]
+
+            # for i in range(0, len(path)):
+            #     if path[i].ref:
+            #         if switch and endRef > i: #works if there is a nonref node. TODO fix if ref to ref
+            #             endRef = i + 1
+            #         elif not switch and startRef < i:
+            #             startRef = i
+            #     else:
+            #         switch = True
+            if switch or switchRef:
                 seq = mergeNodes(path[startRef:endRef])
                 # should always start on ref
                 ref1Pos = path[startRef].refPos[0]
@@ -721,6 +796,18 @@ class Graph:
             ref1Pos += 1
         return ref, seq, ref1Pos
 
+    def multiplicity(self, reads):
+        for kmer in self.nodes.keys():
+            countList = []
+            for read in reads:
+                countList.append(occurrences(read, kmer))
+
+            self.nodes[kmer][0].multiplicity = [min(countList), max(countList)]
+            if self.nodes[kmer][0].ref:
+                self.nodes[kmer][0].refMultiplicity = occurrences(self.ref, kmer)
+
+
+
     def findCandidateStarts(self):
         """
         Find nodes with no ins.
@@ -740,9 +827,11 @@ class Graph:
         for i in range(1, len(kmers)):
             counts.append(sum(kmers[i-1].out[kmers[i]]))
             numberForward += kmers[i-1].out[kmers[i]][0]
-        minCount = min(counts)
-        maxCount = max(counts)
-        average = sum(counts)/len(counts)
+        if len(counts):
+            minCount = min(counts)
+            maxCount = max(counts)
+            average =  sum(counts)/len(counts)
+
 
         return (minCount, maxCount, average, numberForward/sum(counts))
 
@@ -754,34 +843,91 @@ class Graph:
         end = pos2 - self.pos1 + self.k
         return self.ref[start:end]
 
-    def findVariants(self, best2Comb, bestPathForEachRead, best2AlignmentForEachRead, bestSumCount, variantDict):
+    # def findVariants(self, best2Comb, bestPathForEachRead, best2AlignmentForEachRead, bestSumCount, variantDict, variants4eachPath):
+    #     for c in range(0, len(best2Comb)):
+    #         for CHROM, POS, ID, REF, ALT, MINCOUNT, FRACFORWARD in self.findPaths([best2Comb[c]]):
+    #             myVariant = Variant(CHROM, POS, ID, REF, ALT, MINCOUNT,FRACFORWARD)
+    #             if len(best2Comb) == 2:
+    #                 FA = len(bestPathForEachRead[c]) / len(best2AlignmentForEachRead)
+    #                 myVariant.FA = [FA]
+    #                 AS = sum(best2AlignmentForEachRead) - bestSumCount
+    #                 myVariant.AS = [AS]
+    #             else:
+    #                 FA = -1
+    #                 myVariant.FA = [FA]
+    #                 AS = -1
+    #                 myVariant.AS = [AS]
+    #             if POS in variantDict:
+    #                 sameVariant = False
+    #                 for variant in variantDict[POS]:
+    #                     if variant.REF == REF and variant.ALT == ALT:
+    #                         variant.NS = max(MINCOUNT, variant.NS)
+    #                         variant.NW += 1
+    #                         sameVariant = True
+    #                         variant.FA.append(FA)
+    #                         variant.AS.append(AS)
+    #                         variant.FF.append(FRACFORWARD)
+    #                 if sameVariant == False:
+    #                     variantDict[POS].append(myVariant)
+    #             else:
+    #                 variantDict[POS] = [myVariant]
+    #     return variantDict
+
+    def findVariants(self, best2Comb, bestPathForEachRead, best2AlignmentForEachRead, bestSumCount, variantDict, variants4eachPath):
         for c in range(0, len(best2Comb)):
-            for CHROM, POS, ID, REF, ALT, MINCOUNT, FRACFORWARD in self.findPaths([best2Comb[c]]):
-                myVariant = Variant(CHROM, POS, ID, REF, ALT, MINCOUNT,FRACFORWARD)
-                if len(best2Comb) == 2:
-                    FA = len(bestPathForEachRead[c]) / len(best2AlignmentForEachRead)
-                    myVariant.FA = [FA]
-                    AS = sum(best2AlignmentForEachRead) - bestSumCount
-                    myVariant.AS = [AS]
-                else:
-                    FA = -1
-                    myVariant.FA = [FA]
-                    AS = -1
-                    myVariant.AS = [AS]
-                if POS in variantDict:
-                    sameVariant = False
-                    for variant in variantDict[POS]:
-                        if variant.REF == REF and variant.ALT == ALT:
-                            variant.NS = max(MINCOUNT, variant.NS)
-                            variant.NW += 1
-                            sameVariant = True
-                            variant.FA.append(FA)
-                            variant.AS.append(AS)
-                            variant.FF.append(FRACFORWARD)
-                    if sameVariant == False:
-                        variantDict[POS].append(myVariant)
-                else:
-                    variantDict[POS] = [myVariant]
+            for varList in variants4eachPath[c].values():
+                for myVariant in varList:
+                    if len(best2Comb) == 2:
+                        FA = len(bestPathForEachRead[c]) / len(
+                            best2AlignmentForEachRead)
+                        myVariant.FA = [FA]
+                        AS = sum(best2AlignmentForEachRead) - bestSumCount
+                        myVariant.AS = [AS]
+                    else:
+                        FA = -1
+                        myVariant.FA = [FA]
+                        AS = -1
+                        myVariant.AS = [AS]
+                    if myVariant.POS in variantDict:
+                        sameVariant = False
+                        for variant in variantDict[myVariant.POS]:
+                            if variant.REF == myVariant.REF and variant.ALT == myVariant.ALT:
+                                variant.NS = max(myVariant.MINCOUNT, variant.NS)
+                                variant.NW += 1
+                                sameVariant = True
+                                variant.FA.append(FA)
+                                variant.AS.append(AS)
+                                variant.FF.append(myVariant.FRACFORWARD)
+                        if sameVariant == False:
+                            variantDict[myVariant.POS].append(myVariant)
+                    else:
+                        variantDict[myVariant.POS] = [myVariant]
+        return variantDict
+
+
+    def storeVariants(self, POS, REF, ALT, path, variantDict):
+        MINCOUNT, maxCount, average, FRACFORWARD = self.nodeStats(path)
+        myVariant = Variant(self.chr, POS, ".", REF, ALT, MINCOUNT, FRACFORWARD)
+
+        FA = -1
+        myVariant.FA = [FA]
+        AS = -1
+        myVariant.AS = [AS]
+
+        if POS in variantDict:
+            sameVariant = False
+            for variant in variantDict[POS]:
+                if variant.REF == REF and variant.ALT == ALT:
+                    variant.NS = max(MINCOUNT, variant.NS)
+                    variant.NW += 1
+                    sameVariant = True
+                    # variant.FA.append(FA)
+                    # variant.AS.append(AS)
+                    variant.FF.append(FRACFORWARD)
+            if sameVariant == False:
+                variantDict[POS].append(myVariant)
+        else:
+            variantDict[POS] = [myVariant]
         return variantDict
 
     def printVariants(self, variantDict, index=False, debug=False):
@@ -822,13 +968,14 @@ class Graph:
                     dot.node(str(n), key +"\n"+str(n.refPos), style='filled', fillcolor="#E1ECF4")
                 else:
                     dot.node(str(n), key)
-                for node, count in n.out.items():
-                    if sum(count) > cutoff:
-                        dot.node(str(node), key)
+                    for node, count in n.out.items():
+                        if sum(count) > cutoff:
+                            if node.ref == False:
+                                dot.node(str(node), key)
         for key, value in self.nodes.items():
             for n in value:
                 for node, count in n.out.items():
-                    if n.ref and node.ref: #TODO change this so that can actually reference the correct node
+                    if n.ref and node.ref:
                         dot.edge(str(n), str(node), xlabel=str(count))
                     elif sum(count) > cutoff:
                         dot.edge(str(n), str(node), xlabel=str(count))
@@ -871,6 +1018,17 @@ def deBruijn(graph, k, text, firstPos=0, reverse=True, ref=False):
         nodes.append(myNode)
     return nodes
 
+
+def occurrences(string, sub):
+    # https://stackoverflow.com/questions/2970520/string-count-with-overlapping-occurrences
+    count = start = 0
+    while True:
+        start = string.find(sub, start) + 1
+        if start > 0:
+            count+=1
+        else:
+            return count
+
 def mergeNodes(kmers):
     """
     Create the string formed by kmers. Kmers in correct order.
@@ -879,6 +1037,76 @@ def mergeNodes(kmers):
     for i in range(1, len(kmers)):
         text = text + kmers[i].name[-1]
     return text
+
+def findDifference(ref, seq, ref1Pos, path):
+    savedRef = ref
+    savedSeq = seq
+    savedPath = path.copy()
+    savedPathPointer = 0
+    pointer = 0
+    while (min(len(seq), len(ref)) > 1):
+        if seq[0] == ref[0]:
+            seq = seq[1:]
+            ref = ref[1:]
+            ref1Pos += 1
+            pointer += 1
+            path = path[1:]
+            savedPathPointer += 1
+
+        else:
+            increment = 0
+            while seq[increment] == "-" or ref[increment] == "-" or ref[increment] != seq[increment]:
+                increment += 1
+
+            if increment:
+                if ref[0] == "-":
+                    path2return = howFar(savedPath, savedPathPointer-1, savedPathPointer+increment)
+                    if path2return is not False:
+                        yield(savedRef[pointer-1:pointer+increment].replace("-", ""), savedSeq[pointer-1:pointer+increment].replace("-", ""), ref1Pos, path2return)
+                    savedPathPointer += increment
+                    path = path[increment:]
+                elif seq[0] == "-":
+                    path2return = howFar(savedPath, savedPathPointer, savedPathPointer+increment+1)
+                    if path2return is not False:
+                        yield(savedRef[pointer:pointer + increment+1].replace("-", ""), savedSeq[pointer:pointer + increment+1].replace("-", ""), ref1Pos, path2return)
+                else:
+                    path2return = howFar(savedPath, savedPathPointer,  savedPathPointer + increment)
+                    if path2return is not False:
+                        yield(ref[:increment].replace("-", ""), seq[:increment].replace("-", ""), ref1Pos,path2return)
+                    savedPathPointer += increment
+                    path = path[increment:]
+                seq = seq[increment:]
+                ref = ref[increment:]
+                pointer += increment
+            else:
+                seq = seq[1:]
+                ref = ref[1:]
+                path = path[1:]
+                ref1Pos += 1
+                pointer += 1
+                savedPathPointer += 1
+
+def howFar(savedPath, begin, end, k=8):
+    if end >= len(savedPath):
+        return False
+    if begin > end:
+        return False
+
+    if savedPath[begin].ref and savedPath[end].ref:
+        return savedPath[begin: end]
+
+    newBegin = begin
+    newEnd = end
+    if savedPath[begin].ref:
+        while savedPath[newEnd].ref == False and newEnd - end < k-1 and newEnd < len(savedPath):
+            newEnd += 1
+    if savedPath[end].ref:
+        while savedPath[newBegin].ref == False and  begin - newBegin < k-1 and newBegin > 0:
+            newBegin -= 1
+
+    return savedPath[newBegin: newEnd]
+
+
 
 def argParser():
     """
