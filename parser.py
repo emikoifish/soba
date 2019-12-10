@@ -104,10 +104,10 @@ def parseBam(inputBam, inputRef, outputFile):
     # endIndex = startIndex + 30
     # startIndex = 2092640 #short repeat
     # endIndex = startIndex + 30
-    startIndex = 2145400 #long repeat
-    endIndex = startIndex + 30
-    # startIndex = 2145400
-    # endIndex = startIndex + 10000
+    # startIndex = 2145400 #long repeat
+    # endIndex = startIndex + 30
+    startIndex = 2145400
+    endIndex = startIndex + 10000
     # startIndex = 2000000
     # endIndex = 2023000
 
@@ -208,7 +208,7 @@ def parseBam(inputBam, inputRef, outputFile):
                 myGraph.pruneGraph(2)
                 myGraph.multiplicity(savedWindowedReads)
 
-                myGraph.printGraph()
+                # myGraph.printGraph()
 
                 # find paths
                 myGraph.performSearch(refNodes[0])
@@ -238,10 +238,15 @@ def parseBam(inputBam, inputRef, outputFile):
                     alignments.append(newAlignments)
 
                     variant4path = {}
+                    maxPathAlign = []
+                    maxScore = 0
                     for i in pairwise2.align.globalms(ref, mergeNodes(path), 2, -1, -.5, -.1):
-                        for REF, ALT, POS, PATH in findDifference(i[0], i[1], index1, path):
-                            if len(PATH) > 1:
-                                variant4path = myGraph.storeVariants(POS, REF, ALT, PATH, variant4path)
+                        if maxScore < i[2]:
+                            maxPathAlign = i
+                            maxScore = i[2]
+                    for REF, ALT, POS, PATH in findDifference(maxPathAlign[0], maxPathAlign[1], index1, path):
+                        if len(PATH) > 1:
+                            variant4path = myGraph.storeVariants(POS, REF, ALT, PATH, variant4path)
                     variants4eachPath.append(variant4path)
 
                 # instead of finding the best path, we want to find the reference path.
@@ -302,7 +307,6 @@ def parseBam(inputBam, inputRef, outputFile):
                         outFile.write("2\n")
                     else:
                         outFile.write("3\n")
-
 
                     # find the variants and add to currentPositionVariants
                     variantDict = myGraph.findVariants(best2Comb, bestPathForEachRead, best2AlignmentForEachRead, refSumCount, variantDict, variants4eachPath)
@@ -875,7 +879,7 @@ class Graph:
 
     def findVariants(self, best2Comb, bestPathForEachRead, best2AlignmentForEachRead, bestSumCount, variantDict, variants4eachPath):
         for c in range(0, len(best2Comb)):
-            for varList in variants4eachPath[c].values():
+            for varList in variants4eachPath[best2Comb[c]].values():
                 for myVariant in varList:
                     if len(best2Comb) == 2:
                         FA = len(bestPathForEachRead[c]) / len(
@@ -892,12 +896,12 @@ class Graph:
                         sameVariant = False
                         for variant in variantDict[myVariant.POS]:
                             if variant.REF == myVariant.REF and variant.ALT == myVariant.ALT:
-                                variant.NS = max(myVariant.MINCOUNT, variant.NS)
+                                variant.NS = max(myVariant.NS, variant.NS)
                                 variant.NW += 1
                                 sameVariant = True
                                 variant.FA.append(FA)
                                 variant.AS.append(AS)
-                                variant.FF.append(myVariant.FRACFORWARD)
+                                variant.FF.append(myVariant.FF[0])
                         if sameVariant == False:
                             variantDict[myVariant.POS].append(myVariant)
                     else:
@@ -1055,24 +1059,26 @@ def findDifference(ref, seq, ref1Pos, path):
 
         else:
             increment = 0
-            while seq[increment] == "-" or ref[increment] == "-" or ref[increment] != seq[increment]:
+            while  seq[increment] == "-" or ref[increment] == "-" or ref[increment] != seq[increment] :
                 increment += 1
+                if pointer + increment >= len(seq):
+                    break
 
             if increment:
                 if ref[0] == "-":
                     path2return = howFar(savedPath, savedPathPointer-1, savedPathPointer+increment)
                     if path2return is not False:
-                        yield(savedRef[pointer-1:pointer+increment].replace("-", ""), savedSeq[pointer-1:pointer+increment].replace("-", ""), ref1Pos, path2return)
+                        yield(savedRef[pointer-1:pointer+increment].replace("-", ""), savedSeq[pointer-1:pointer+increment].replace("-", ""), ref1Pos-1, path2return)
                     savedPathPointer += increment
                     path = path[increment:]
                 elif seq[0] == "-":
                     path2return = howFar(savedPath, savedPathPointer, savedPathPointer+increment+1)
                     if path2return is not False:
-                        yield(savedRef[pointer:pointer + increment+1].replace("-", ""), savedSeq[pointer:pointer + increment+1].replace("-", ""), ref1Pos, path2return)
+                        yield(savedRef[pointer:pointer + increment+1].replace("-", ""), savedSeq[pointer:pointer + increment+1].replace("-", ""), ref1Pos-1, path2return)
                 else:
                     path2return = howFar(savedPath, savedPathPointer,  savedPathPointer + increment)
                     if path2return is not False:
-                        yield(ref[:increment].replace("-", ""), seq[:increment].replace("-", ""), ref1Pos,path2return)
+                        yield(ref[:increment].replace("-", ""), seq[:increment].replace("-", ""), ref1Pos-1,path2return)
                     savedPathPointer += increment
                     path = path[increment:]
                 seq = seq[increment:]
