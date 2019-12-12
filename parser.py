@@ -106,11 +106,13 @@ def parseBam(inputBam, inputRef, outputFile):
     # endIndex = startIndex + 30
     # startIndex = 2145400 #long repeat
     # endIndex = startIndex + 30
-    startIndex = 2145400
-    endIndex = startIndex + 10000
-    # startIndex = 2000000
-    # endIndex = 2023000
-
+    # startIndex = 2145400
+    # endIndex = startIndex + 10000
+    startIndex = 2204710
+    endIndex = startIndex + 30
+    #position: 2172915	 numPaths8797
+    # 2195460 has multiple of the same kmer?
+    #
     # startIndex = 2000000
     # endIndex = 3000000
     k = 8
@@ -194,10 +196,9 @@ def parseBam(inputBam, inputRef, outputFile):
                     # if refPosEnd <= index2 and refPosStart <= index1:
                     if r.reference_end > index1 and r.reference_start < index2:
                         windowedRead = read.query_alignment_sequence[seqPosStart:seqPosEnd]
-                        if len(windowedRead):
+                        if len(windowedRead) and len(windowedRead) < windowSize *2:
                             savedWindowedReads.append(windowedRead)
-                        # print(windowedRead)
-                        deBruijn(myGraph, changedk, windowedRead, reverse=read.is_reverse)
+                            deBruijn(myGraph, changedk, windowedRead, reverse=read.is_reverse)
 
                     else:
                         # remove from memory
@@ -208,14 +209,13 @@ def parseBam(inputBam, inputRef, outputFile):
                 myGraph.pruneGraph(2)
                 myGraph.multiplicity(savedWindowedReads)
 
-                # myGraph.printGraph()
+                myGraph.printGraph()
 
                 # find paths
                 myGraph.performSearch(refNodes[0])
 
-
-
                 # make sure to add the ref seq if doesn't exist.
+                print(myGraph.discovered, refNodes)
                 refPath = -1
                 for i in range(0, len(myGraph.discovered)):
                     if myGraph.discovered[i] == refNodes:
@@ -223,6 +223,7 @@ def parseBam(inputBam, inputRef, outputFile):
                 if refPath == -1:
                     myGraph.discovered.append(refNodes)
                     refPath = len(myGraph.discovered) - 1
+
 
                 myGraph.refPath = refPath
 
@@ -233,21 +234,26 @@ def parseBam(inputBam, inputRef, outputFile):
                     newAlignments = []
 
                     for read in savedWindowedReads:
-                        newAlignments.append(max(i[2] for i in pairwise2.align.globalms(mergeNodes(path), read, 2, -1, -.5, -.1)))
+                        newAlignments.append(max(i[2] for i in pairwise2.align.globalms(mergeNodes(path), read,  2, -1, -1.5, -.1)))
                         # print(pairwise2.align.globalms(mergeNodes(path), read, 2, -1, -.5, -.1))
                     alignments.append(newAlignments)
 
                     variant4path = {}
                     maxPathAlign = []
                     maxScore = 0
-                    for i in pairwise2.align.globalms(ref, mergeNodes(path), 2, -1, -.5, -.1):
+                    for i in pairwise2.align.globalms(ref, mergeNodes(path), 2, -1, -1.5, -.1):
                         if maxScore < i[2]:
                             maxPathAlign = i
                             maxScore = i[2]
                     for REF, ALT, POS, PATH in findDifference(maxPathAlign[0], maxPathAlign[1], index1, path):
+                        print(REF, ALT, POS, PATH)
+
                         if len(PATH) > 1:
+                            print(REF, ALT, POS)
                             variant4path = myGraph.storeVariants(POS, REF, ALT, PATH, variant4path)
                     variants4eachPath.append(variant4path)
+
+
 
                 # instead of finding the best path, we want to find the reference path.
                 refSumCount = sum(alignments[refPath])
@@ -365,6 +371,7 @@ class Node:
         self.inDegree = 0
         self.readPos = []
         self.refMultiplicity = 0
+        self.multiplicity = []
 
     def addIn(self, newIn, reverse, ref):
         """Add a new in to node."""
@@ -652,6 +659,7 @@ class Graph:
     #         else: # broke cycle, so add this path
     #             self.discovered.append(discovered)
 
+    # TODO start search from not the starting ref node
     def search(self, node, discovered, pos):
 
         discovered[node].append(pos)
@@ -662,6 +670,7 @@ class Graph:
                 for key,value in discovered.items():
                     for v in value:
                         orderedDiscovered[v] = key
+                # print(mergeNodes(orderedDiscovered))
                 self.discovered.append(orderedDiscovered)
 
         for nextNode in node.out.keys():
@@ -676,6 +685,7 @@ class Graph:
                     for key, value in discovered.items():
                         for v in value:
                             orderedDiscovered[v] = key
+                    # print(mergeNodes(orderedDiscovered))
                     self.discovered.append(orderedDiscovered)
 
 
@@ -685,6 +695,7 @@ class Graph:
                 if len(kmers[v]) >= v.multiplicity[0] and len(kmers[v]) <= v.multiplicity[1]:
                     continue
                 else:
+                    print("key", key)
                     return False
         return True
 
@@ -969,13 +980,13 @@ class Graph:
         for key, value in self.nodes.items():
             for n in value:
                 if n.ref:
-                    dot.node(str(n), key +"\n"+str(n.refPos), style='filled', fillcolor="#E1ECF4")
+                    dot.node(str(n), key +"\n"+str(n.refPos) +"\n"+str(n.multiplicity), style='filled', fillcolor="#E1ECF4")
                 else:
-                    dot.node(str(n), key)
+                    dot.node(str(n), key+"\n"+str(n.multiplicity))
                     for node, count in n.out.items():
                         if sum(count) > cutoff:
                             if node.ref == False:
-                                dot.node(str(node), key)
+                                dot.node(str(node), key+"\n"+str(n.multiplicity))
         for key, value in self.nodes.items():
             for n in value:
                 for node, count in n.out.items():
@@ -1043,6 +1054,7 @@ def mergeNodes(kmers):
     return text
 
 def findDifference(ref, seq, ref1Pos, path):
+    # print(ref,"\n"+seq, ref1Pos, path)
     savedRef = ref
     savedSeq = seq
     savedPath = path.copy()
@@ -1059,31 +1071,35 @@ def findDifference(ref, seq, ref1Pos, path):
 
         else:
             increment = 0
-            while  seq[increment] == "-" or ref[increment] == "-" or ref[increment] != seq[increment] :
+            while seq[increment] == "-" or ref[increment] == "-" or ref[increment] != seq[increment] :
                 increment += 1
-                if pointer + increment >= len(seq):
+                if pointer + increment >= len(savedSeq):
                     break
-
             if increment:
+                # print(ref, seq)
                 if ref[0] == "-":
                     path2return = howFar(savedPath, savedPathPointer-1, savedPathPointer+increment)
                     if path2return is not False:
+                        print("if", savedRef[pointer-1:pointer+increment].replace("-", ""), savedSeq[pointer-1:pointer+increment].replace("-", ""))
                         yield(savedRef[pointer-1:pointer+increment].replace("-", ""), savedSeq[pointer-1:pointer+increment].replace("-", ""), ref1Pos-1, path2return)
                     savedPathPointer += increment
                     path = path[increment:]
                 elif seq[0] == "-":
                     path2return = howFar(savedPath, savedPathPointer, savedPathPointer+increment+1)
                     if path2return is not False:
+                        print("elif",savedRef[pointer:pointer + increment+1].replace("-", ""), savedSeq[pointer:pointer + increment+1].replace("-", "") )
                         yield(savedRef[pointer:pointer + increment+1].replace("-", ""), savedSeq[pointer:pointer + increment+1].replace("-", ""), ref1Pos-1, path2return)
                 else:
                     path2return = howFar(savedPath, savedPathPointer,  savedPathPointer + increment)
                     if path2return is not False:
-                        yield(ref[:increment].replace("-", ""), seq[:increment].replace("-", ""), ref1Pos-1,path2return)
+                        print("else", ref[:increment].replace("-", ""), seq[:increment].replace("-", ""))
+                        yield(ref[:increment].replace("-", ""), seq[:increment].replace("-", ""), ref1Pos,path2return)
                     savedPathPointer += increment
                     path = path[increment:]
                 seq = seq[increment:]
                 ref = ref[increment:]
                 pointer += increment
+                ref1Pos += increment
             else:
                 seq = seq[1:]
                 ref = ref[1:]
@@ -1103,12 +1119,14 @@ def howFar(savedPath, begin, end, k=8):
 
     newBegin = begin
     newEnd = end
-    if savedPath[begin].ref:
-        while savedPath[newEnd].ref == False and newEnd - end < k-1 and newEnd < len(savedPath):
-            newEnd += 1
-    if savedPath[end].ref:
-        while savedPath[newBegin].ref == False and  begin - newBegin < k-1 and newBegin > 0:
-            newBegin -= 1
+    # print(savedPath, begin, end, k)
+    # if savedPath[begin].ref:
+    while newEnd < len(savedPath) and savedPath[newEnd].ref == False and newEnd - end < k-1:
+        print(newEnd < len(savedPath),  savedPath[newEnd].ref == False, newEnd - end < k-1)
+        newEnd += 1
+    # if savedPath[end].ref:
+    while savedPath[newBegin].ref == False and  begin - newBegin < k-1 and newBegin > 0:
+        newBegin -= 1
 
     return savedPath[newBegin: newEnd]
 
